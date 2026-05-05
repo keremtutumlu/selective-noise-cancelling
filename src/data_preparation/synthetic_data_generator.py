@@ -206,7 +206,7 @@ class SyntheticDatasetBuilder:
 # --- Execution Entry Point ---
 if __name__ == "__main__":
     # Path configuration
-    BASE_DIR = Path(__file__).parent.parent.parent
+    BASE_DIR = Path(__file__).parent.parent.parent.parent
     CSV_PATH = BASE_DIR / "data" / "raw" / "archive" / "esc50.csv"
     AUDIO_DIR = BASE_DIR / "data" / "raw" / "archive" / "audio" / "audio"
     PROCESSED_DIR = BASE_DIR / "data" / "processed" / "training_pipeline"

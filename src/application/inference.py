@@ -99,7 +99,7 @@ class ANCPredictor:
 # --- Execution ---
 if __name__ == "__main__":
     # Path definitions
-    BASE_DIR = Path(__file__).parent.parent.parent
+    BASE_DIR = Path(__file__).parent.parent.parent.parent
     MODEL_PATH = BASE_DIR / "saved_models" / "base_models" / "best_mobilenetv2_anc.h5"
     
     # The exact categories used during the training phase

@@ -80,7 +80,7 @@ class ANCAcousticSimulator:
 
 # --- Execution Entry Point ---
 if __name__ == "__main__":
-    BASE_DIR = Path(__file__).parent.parent.parent
+    BASE_DIR = Path(__file__).parent.parent.parent.parent
     TEST_DIR = BASE_DIR / "data" / "test_samples"
     
     ORIGINAL_FILE = TEST_DIR / "test_sound.wav"

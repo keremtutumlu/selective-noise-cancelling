@@ -137,7 +137,7 @@ class ModelTrainer:
 
 # --- Execution ---
 if __name__ == "__main__":
-    BASE_DIR = Path(__file__).parent.parent
+    BASE_DIR = Path(__file__).parent.parent.parent
     PROCESSED_DATA_DIR = BASE_DIR / "data" / "processed"
     MODEL_SAVE_DIR = BASE_DIR / "saved_models" / "base_models"
     

@@ -71,7 +71,7 @@ class SystemOrchestrator:
 
 # --- Execution Entry Point ---
 if __name__ == "__main__":
-    BASE_DIR = Path(__file__).parent.parent.parent
+    BASE_DIR = Path(__file__).parent.parent.parent.parent
     MODEL_PATH = BASE_DIR / "saved_models" / "base_models" / "best_mobilenetv2_anc.h5"
     TEST_DIR = BASE_DIR / "data" / "test_samples"
     

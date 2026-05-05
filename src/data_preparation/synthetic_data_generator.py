@@ -1,229 +1,198 @@
 """
-Module: synthetic_data_generator
-Description: 
-    This module is responsible for generating a robust, synthetic multi-label dataset 
-    for Selective Active Noise Cancellation (SNC). It simulates real-world acoustic 
-    environments by superimposing (mixing) multiple isolated audio samples (e.g., 
-    wind noise + siren) at varying Signal-to-Noise Ratios (SNR). 
-    
-    Key Engineering Features:
-    - Low-Latency Adaptation: Crops audio into 1-second dynamic windows to meet 
-      Edge AI (MCU) real-time processing constraints.
-    - Data Augmentation: Randomly selects and mixes 1 to 3 distinct audio classes 
-      per sample to prevent model overfitting and improve generalization.
-    - Feature Extraction: Computes Log-Mel Spectrograms and applies RGB channel 
-      emulation (3 channels) to satisfy the input requirements of MobileNetV2.
-    - Multi-Hot Encoding: Transforms single-label data into multi-label arrays 
-      (e.g., [1, 0, 1, 0]) suitable for Sigmoid-based neural network architectures.
-"""
+Multi-label synthetic dataset builder for the Selective Noise Cancellation
+project.
 
+The training objective is multi-label classification — at any given moment the
+microphone may pick up several overlapping environmental sounds (e.g. a siren
+*and* wind *and* an engine). This module synthesises that condition by mixing
+1–3 ESC-50 clips at random amplitude ratios and emitting a multi-hot label.
+
+Compared to the previous generator, this implementation:
+
+* Loads each source WAV from disk **once** and caches the resampled waveform
+  in memory. Generating N samples then costs O(N) random-window draws and
+  log-mel transforms instead of O(N) disk reads.
+* Emits a `class_names.json` alongside the .npy artefacts so downstream
+  inference code does not have to hard-code the (alphabetical) class order.
+* Treats the alphabetical class ordering as a public contract — see
+  ``CANONICAL_CLASSES``.
+
+Inputs:
+    * ``data/raw/archive/esc50.csv`` — ESC-50 metadata.
+    * ``data/raw/archive/audio/audio/`` — ESC-50 WAV files at 16 kHz.
+
+Outputs (``data/processed/training_pipeline/``):
+    * ``X_multi_features.npy`` — float32 ``(N, 64, 101, 3)`` log-mel tensors.
+    * ``y_multi_labels.npy``   — float32 ``(N, 8)`` multi-hot vectors.
+    * ``class_names.json``     — alphabetical list of class names.
+"""
+import json
 import logging
 import random
+from pathlib import Path
+from typing import Dict, List, Tuple
+
 import librosa
 import numpy as np
 import pandas as pd
-from pathlib import Path
-from typing import List, Dict
 
-# Configure global logging standards
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-class SyntheticDatasetBuilder:
+# Public contract: class indices are positions in this alphabetical list.
+# `ANCPredictor` and `quantize_for_edge.py` both rely on this ordering.
+CANONICAL_CLASSES: Tuple[str, ...] = (
+    "car_horn", "crying_baby", "dog", "engine",
+    "keyboard_typing", "rain", "siren", "wind",
+)
+
+
+class MultiLabelDatasetBuilder:
     """
-    Orchestrates the extraction, mixing, and feature engineering of audio files 
-    to build a multi-label training dataset.
+    Builds a multi-label log-mel dataset by mixing ESC-50 clips in memory.
+
+    Usage:
+        builder = MultiLabelDatasetBuilder(csv_path, audio_dir)
+        builder.build(num_samples=15_000, output_dir=processed_dir)
     """
-    
-    def __init__(self, csv_path: Path, audio_dir: Path, target_classes: List[str], target_sr: int = 16000):
-        """
-        Initializes the builder and validates the environment constraints.
-        """
+
+    def __init__(
+        self,
+        csv_path: Path,
+        audio_dir: Path,
+        target_classes: Tuple[str, ...] = CANONICAL_CLASSES,
+        target_sr: int = 16000,
+        n_mels: int = 64,
+        n_fft: int = 400,
+        hop_length: int = 160,
+        max_mix: int = 3,
+        snr_range: Tuple[float, float] = (0.4, 1.0),
+        seed: int = 42,
+    ):
         self.csv_path = csv_path
         self.audio_dir = audio_dir
-        self.target_classes = sorted(target_classes)  # Enforce consistent alphabetical indexing
-        self.target_sr = target_sr
-        self.window_length = target_sr * 1  # Exactly 1 second of audio (16,000 samples)
+        self.target_classes = tuple(sorted(target_classes))
         self.num_classes = len(self.target_classes)
-        
-        # Build the validated file index immediately upon instantiation
-        self.class_file_index = self._build_validated_file_index()
+        self.target_sr = target_sr
+        self.window_length = target_sr  # 1 second
+        self.n_mels = n_mels
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.max_mix = max_mix
+        self.snr_range = snr_range
 
-    def _build_validated_file_index(self) -> Dict[str, List[Path]]:
-        """
-        Reads the metadata CSV, filters for target classes, and strictly validates 
-        the physical existence of each audio file before indexing it.
-        """
-        logging.info("Building and validating file index from metadata...")
-        
+        random.seed(seed)
+        np.random.seed(seed)
+
+        self._waveform_cache: Dict[str, List[np.ndarray]] = self._load_all_waveforms()
+
+    def _load_all_waveforms(self) -> Dict[str, List[np.ndarray]]:
+        """Load and resample every target WAV into RAM exactly once."""
         if not self.csv_path.exists():
-            raise FileNotFoundError(f"Metadata CSV not found at: {self.csv_path}")
+            raise FileNotFoundError(f"Metadata CSV not found: {self.csv_path}")
         if not self.audio_dir.exists():
-            raise FileNotFoundError(f"Audio directory not found at: {self.audio_dir}")
+            raise FileNotFoundError(f"Audio directory not found: {self.audio_dir}")
 
         df = pd.read_csv(self.csv_path)
-        filtered_df = df[df['category'].isin(self.target_classes)]
-        
-        file_index = {cls: [] for cls in self.target_classes}
-        missing_files_count = 0
-        
-        for _, row in filtered_df.iterrows():
-            file_path = self.audio_dir / row['filename']
-            
-            # Robustness: Check if file physically exists on the disk
-            if file_path.exists():
-                file_index[row['category']].append(file_path)
-            else:
-                missing_files_count += 1
-                logging.debug(f"Missing file skipped: {file_path.name}")
-                
-        if missing_files_count > 0:
-            logging.warning(f"Skipped {missing_files_count} files that were listed in CSV but missing from disk.")
-            
-        for cls, files in file_index.items():
-            if len(files) == 0:
-                logging.error(f"CRITICAL: No valid files found for class '{cls}'. Check dataset integrity.")
-            else:
-                logging.info(f"Class '{cls}' mapped successfully with {len(files)} validated files.")
-            
-        return file_index
+        df = df[df["category"].isin(self.target_classes)]
 
-    def _extract_random_window(self, audio: np.ndarray) -> np.ndarray:
-        """
-        Extracts a random continuous 1-second block from the provided audio array.
-        Applies zero-padding if the source audio is shorter than 1 second.
-        """
-        audio_length = len(audio)
-        
-        if audio_length > self.window_length:
-            max_start_index = audio_length - self.window_length
-            start_idx = random.randint(0, max_start_index)
-            return audio[start_idx : start_idx + self.window_length]
-        
-        elif audio_length < self.window_length:
-            pad_width = self.window_length - audio_length
-            return np.pad(audio, (0, pad_width), mode='constant')
-            
-        return audio
+        cache: Dict[str, List[np.ndarray]] = {cls: [] for cls in self.target_classes}
+        missing = 0
+        for _, row in df.iterrows():
+            path = self.audio_dir / row["filename"]
+            if not path.exists():
+                missing += 1
+                continue
+            waveform, _ = librosa.load(path, sr=self.target_sr)
+            cache[row["category"]].append(waveform.astype(np.float32))
 
-    def _apply_superposition(self, audio_tracks: List[np.ndarray]) -> np.ndarray:
-        """
-        Mixes multiple audio arrays via superposition. Simulates varying SNR 
-        by assigning random amplitude weights to each track.
-        """
-        mixed_signal = np.zeros(self.window_length, dtype=np.float32)
-        
-        for track in audio_tracks:
-            # Apply dynamic volume scaling (SNR variance)
-            amplitude_weight = random.uniform(0.4, 1.0)
-            mixed_signal += (track * amplitude_weight)
-            
-        # Peak normalization to prevent digital clipping [-1.0, 1.0]
-        peak_value = np.max(np.abs(mixed_signal))
-        if peak_value > 0:
-            mixed_signal = mixed_signal / peak_value
-            
-        return mixed_signal
+        if missing:
+            logging.warning(f"Skipped {missing} missing files referenced in CSV.")
+        for cls in self.target_classes:
+            if not cache[cls]:
+                raise RuntimeError(f"No usable WAVs found for class '{cls}'.")
+            logging.info(f"Cached {len(cache[cls]):>4d} clips for '{cls}'.")
+        return cache
 
-    def _compute_model_features(self, audio: np.ndarray) -> np.ndarray:
+    def _random_window(self, waveform: np.ndarray) -> np.ndarray:
+        """Crop or zero-pad ``waveform`` to exactly ``self.window_length`` samples."""
+        length = len(waveform)
+        if length > self.window_length:
+            start = random.randint(0, length - self.window_length)
+            return waveform[start:start + self.window_length]
+        if length < self.window_length:
+            return np.pad(waveform, (0, self.window_length - length), mode="constant")
+        return waveform
+
+    def _superpose(self, tracks: List[np.ndarray]) -> np.ndarray:
+        """Mix tracks at random per-track amplitudes, then peak-normalise to [-1, 1]."""
+        mixed = np.zeros(self.window_length, dtype=np.float32)
+        for track in tracks:
+            mixed += track * random.uniform(*self.snr_range)
+        peak = np.max(np.abs(mixed))
+        if peak > 0:
+            mixed /= peak
+        return mixed
+
+    def _log_mel_rgb(self, waveform: np.ndarray) -> np.ndarray:
         """
-        Transforms the raw audio waveform into a Z-score normalized, 3-channel 
-        Log-Mel Spectrogram tensor optimized for MobileNetV2 ingestion.
+        Convert a 1-second waveform into a Z-score-normalised log-mel spectrogram
+        triplicated across 3 channels to satisfy MobileNetV2's RGB input layer.
         """
-        # Generate Mel Spectrogram (25ms window, 10ms hop)
-        mel_spec = librosa.feature.melspectrogram(
-            y=audio, sr=self.target_sr, n_fft=400, hop_length=160, n_mels=64
+        mel = librosa.feature.melspectrogram(
+            y=waveform, sr=self.target_sr,
+            n_fft=self.n_fft, hop_length=self.hop_length, n_mels=self.n_mels,
         )
-        log_mel_spec = librosa.power_to_db(mel_spec, ref=np.max)
-        
-        # Standardization (Z-score)
-        mean_val = np.mean(log_mel_spec)
-        std_val = np.std(log_mel_spec)
-        normalized_features = (log_mel_spec - mean_val) / (std_val + 1e-6)
-        
-        # Reshape to (Mel_Bins, Time_Steps, Channels) -> (64, 101, 3)
-        expanded_tensor = np.expand_dims(normalized_features, axis=-1)
-        rgb_emulated_tensor = np.repeat(expanded_tensor, 3, axis=-1)
-        
-        return rgb_emulated_tensor
+        log_mel = librosa.power_to_db(mel, ref=np.max)
+        log_mel = (log_mel - log_mel.mean()) / (log_mel.std() + 1e-6)
+        return np.repeat(log_mel[..., np.newaxis], 3, axis=-1).astype(np.float32)
 
-    def execute_pipeline(self, num_samples: int, output_dir: Path) -> None:
-        """
-        Executes the dataset generation loop, compiling the feature matrix (X) 
-        and the multi-hot label matrix (y), and serializes them to disk.
-        """
-        logging.info(f"Initiating generation pipeline for {num_samples} samples...")
-        
-        feature_matrix = []
-        label_matrix = []
-        
-        for iteration in range(num_samples):
-            # 1. Determine mix complexity
-            num_sounds_to_mix = random.randint(1, 3)
-            selected_classes = random.sample(self.target_classes, num_sounds_to_mix)
-            
-            # 2. Initialize the multi-hot label vector
-            multi_hot_vector = np.zeros(self.num_classes, dtype=np.float32)
-            active_audio_crops = []
-            
-            # 3. Process each selected sound
-            for cls in selected_classes:
-                class_index = self.target_classes.index(cls)
-                multi_hot_vector[class_index] = 1.0  # Activate class flag
-                
-                # Retrieve and read a random validated file
-                file_path = random.choice(self.class_file_index[cls])
-                raw_audio, _ = librosa.load(file_path, sr=self.target_sr)
-                
-                # Extract 1-second window
-                cropped_audio = self._extract_random_window(raw_audio)
-                active_audio_crops.append(cropped_audio)
-                
-            # 4. Superposition and Feature Extraction
-            mixed_audio_signal = self._apply_superposition(active_audio_crops)
-            final_features = self._compute_model_features(mixed_audio_signal)
-            
-            # 5. Append to dataset matrices
-            feature_matrix.append(final_features)
-            label_matrix.append(multi_hot_vector)
-            
-            # Progress tracking
-            if (iteration + 1) % 500 == 0:
-                logging.info(f"Pipeline status: {iteration + 1} / {num_samples} records compiled.")
+    def _generate_one(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Generate a single (features, multi_hot_label) pair."""
+        k = random.randint(1, self.max_mix)
+        chosen = random.sample(self.target_classes, k)
 
-        # Serialize datasets
-        X_tensor = np.array(feature_matrix, dtype=np.float32)
-        y_tensor = np.array(label_matrix, dtype=np.float32)
-        
-        logging.info(f"Pipeline completed successfully.")
-        logging.info(f"Feature Tensor (X) Shape: {X_tensor.shape}")
-        logging.info(f"Label Tensor (y) Shape: {y_tensor.shape}")
-        
+        label = np.zeros(self.num_classes, dtype=np.float32)
+        windows: List[np.ndarray] = []
+        for cls in chosen:
+            label[self.target_classes.index(cls)] = 1.0
+            waveform = random.choice(self._waveform_cache[cls])
+            windows.append(self._random_window(waveform))
+
+        return self._log_mel_rgb(self._superpose(windows)), label
+
+    def build(self, num_samples: int, output_dir: Path) -> None:
+        """Generate ``num_samples`` examples and serialise them to ``output_dir``."""
+        logging.info(f"Generating {num_samples} synthetic multi-label samples...")
         output_dir.mkdir(parents=True, exist_ok=True)
-        np.save(output_dir / "X_multi_features.npy", X_tensor)
-        np.save(output_dir / "y_multi_labels.npy", y_tensor)
-        logging.info(f"Binary artifacts exported to: {output_dir}")
 
-# --- Execution Entry Point ---
+        features = np.empty((num_samples, self.n_mels, 101, 3), dtype=np.float32)
+        labels = np.empty((num_samples, self.num_classes), dtype=np.float32)
+
+        log_every = max(1, num_samples // 20)
+        for i in range(num_samples):
+            features[i], labels[i] = self._generate_one()
+            if (i + 1) % log_every == 0:
+                logging.info(f"  {i + 1:>6d} / {num_samples}")
+
+        np.save(output_dir / "X_multi_features.npy", features)
+        np.save(output_dir / "y_multi_labels.npy", labels)
+        with (output_dir / "class_names.json").open("w") as f:
+            json.dump(list(self.target_classes), f, indent=2)
+
+        logging.info(f"Features: {features.shape} {features.dtype}")
+        logging.info(f"Labels:   {labels.shape} {labels.dtype}")
+        logging.info(f"Per-class positives: "
+                     f"{dict(zip(self.target_classes, labels.sum(axis=0).astype(int)))}")
+        logging.info(f"Saved artefacts to {output_dir}")
+
+
 if __name__ == "__main__":
-    # Path configuration
-    BASE_DIR = Path(__file__).parent.parent.parent.parent
-    CSV_PATH = BASE_DIR / "data" / "raw" / "archive" / "esc50.csv"
-    AUDIO_DIR = BASE_DIR / "data" / "raw" / "archive" / "audio" / "audio"
-    PROCESSED_DIR = BASE_DIR / "data" / "processed" / "training_pipeline"
-    
-    # Target acoustic environment parameters
-    TARGET_CATEGORIES = ['siren', 'car_horn', 'engine', 'wind', 'rain', 'keyboard_typing', 'crying_baby', 'dog']
-    
-    try:
-        # Initialize the builder
-        dataset_builder = SyntheticDatasetBuilder(
-            csv_path=CSV_PATH, 
-            audio_dir=AUDIO_DIR, 
-            target_classes=TARGET_CATEGORIES
-        )
-        
-        # Execute the pipeline
-        dataset_builder.execute_pipeline(num_samples=5000, output_dir=PROCESSED_DIR)
-        
-    except Exception as e:
-        logging.critical(f"Pipeline execution failed: {e}")
+    BASE_DIR = Path(__file__).parent.parent.parent
+    builder = MultiLabelDatasetBuilder(
+        csv_path=BASE_DIR / "data" / "raw" / "archive" / "esc50.csv",
+        audio_dir=BASE_DIR / "data" / "raw" / "archive" / "audio" / "audio",
+    )
+    builder.build(
+        num_samples=15_000,
+        output_dir=BASE_DIR / "data" / "processed" / "training_pipeline",
+    )

@@ -43,6 +43,17 @@ class EdgeModelOptimizer:
             return np.random.randn(*shape).astype(np.float32)
 
         samples = np.load(self.calibration_data_path).astype(np.float32)
+
+        expected = tuple(self.keras_model.input_shape[1:])
+        actual = tuple(samples.shape[1:])
+        if actual != expected:
+            logging.warning(
+                f"Calibration data shape {actual} does not match model input {expected}. "
+                "Re-run Stage 1 (synthetic_data_generator.py) to regenerate correct features. "
+                "Falling back to random noise — full_int8 MAE will be degraded."
+            )
+            return np.random.randn(num_samples, *expected).astype(np.float32)
+
         if samples.shape[0] > num_samples:
             idx = np.random.choice(samples.shape[0], num_samples, replace=False)
             samples = samples[idx]
@@ -145,7 +156,7 @@ class EdgeModelOptimizer:
 if __name__ == "__main__":
     BASE_DIR = Path(__file__).parent.parent.parent
     EdgeModelOptimizer(
-        keras_model_path=BASE_DIR / "saved_models" / "base_models" / "best_mobilenetv2_anc.h5",
+        keras_model_path=BASE_DIR / "saved_models" / "base_models" / "best_mobilenetv2_multilabel.h5",
         calibration_data_path=BASE_DIR / "data" / "processed" / "training_pipeline" / "X_multi_features.npy",
         output_dir=BASE_DIR / "saved_models" / "tflite",
     ).run()

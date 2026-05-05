@@ -117,13 +117,25 @@ class MultiLabelTrainer:
             ],
         )
 
-    def _callbacks(self, patience: int) -> list:
+    def _make_checkpoint(self, best_so_far: float = np.inf) -> ModelCheckpoint:
+        """
+        Build a ModelCheckpoint that only saves when val_loss beats ``best_so_far``.
+
+        Passing the stage 1 best val_loss into stage 2's checkpoint prevents
+        stage 2 epoch 1 (which spikes due to BN layer re-initialisation) from
+        overwriting the better stage 1 weights.
+        """
+        ckpt = ModelCheckpoint(
+            filepath=str(self.checkpoint_path),
+            monitor="val_loss", mode="min", save_best_only=True, verbose=1,
+        )
+        ckpt.best = best_so_far
+        return ckpt
+
+    def _callbacks(self, patience: int, best_val_loss: float = np.inf) -> list:
         return [
             EarlyStopping(monitor="val_loss", patience=patience, restore_best_weights=True, verbose=1),
-            ModelCheckpoint(
-                filepath=str(self.checkpoint_path),
-                monitor="val_loss", mode="min", save_best_only=True, verbose=1,
-            ),
+            self._make_checkpoint(best_so_far=best_val_loss),
             ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=3, verbose=1, min_lr=1e-6),
         ]
 
@@ -135,7 +147,7 @@ class MultiLabelTrainer:
         logging.info("Stage 1/2: training classifier head with frozen backbone.")
         self._compile(model, self.head_lr)
         model.summary(print_fn=logging.info)
-        model.fit(
+        stage1 = model.fit(
             x_tr, y_tr,
             validation_data=(x_val, y_val),
             epochs=self.head_epochs,
@@ -143,8 +155,13 @@ class MultiLabelTrainer:
             callbacks=self._callbacks(patience=5),
             verbose=2,
         )
+        stage1_best_val_loss = min(stage1.history["val_loss"])
+        logging.info(f"Stage 1 best val_loss: {stage1_best_val_loss:.4f}")
 
         # Stage 2 — unfreeze backbone and fine-tune end-to-end.
+        # The checkpoint threshold is seeded with stage 1's best so that the
+        # temporary spike at epoch 1 (BN layers re-warming) never overwrites
+        # the already-good stage 1 checkpoint.
         logging.info("Stage 2/2: fine-tuning full network at reduced learning rate.")
         base.trainable = True
         self._compile(model, self.finetune_lr)
@@ -153,7 +170,7 @@ class MultiLabelTrainer:
             validation_data=(x_val, y_val),
             epochs=self.finetune_epochs,
             batch_size=self.batch_size,
-            callbacks=self._callbacks(patience=7),
+            callbacks=self._callbacks(patience=7, best_val_loss=stage1_best_val_loss),
             verbose=2,
         )
 

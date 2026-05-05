@@ -135,16 +135,25 @@ python tests/test_model.py
 - Optional: WAV file inference (place a test file at
   `data/test_samples/test_sound.wav`).
 
-**Most important output — optimal thresholds:**
-```
+**Most important output — optimal thresholds.** Measured values from the
+current checkpoint (siren recall 83.6%, rain F1 0.86):
+
+```python
 THRESHOLDS = {
-    "car_horn": 0.35,
-    "siren": 0.30,
-    ...
+    "car_horn":         0.25,
+    "crying_baby":      0.40,
+    "dog":              0.35,
+    "engine":           0.35,
+    "keyboard_typing":  0.35,
+    "rain":             0.65,
+    "siren":            0.40,
+    "wind":             0.35,
 }
 ```
-Copy these into `ANCPredictor` in `src/application/inference.py` to
-replace the hard-coded 0.5 threshold before deploying.
+
+Copy these into `ANCPredictor` in `src/application/inference.py` to replace
+the hard-coded 0.5 threshold before deploying. See
+`docs/model_and_data.md §4` for the full per-class precision/recall table.
 
 ---
 

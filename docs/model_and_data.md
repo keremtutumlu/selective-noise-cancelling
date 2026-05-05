@@ -207,17 +207,41 @@ For a safety application the recommended strategy is:
   false cancellation of background ambience is acceptable.
 
 Run `tests/test_model.py` to get the F1-optimal threshold for each class
-on the held-out test split. The output looks like:
+on the held-out test split. Measured values from the current checkpoint:
 
-```
+```python
 THRESHOLDS = {
-    "car_horn": 0.35,
-    "crying_baby": 0.45,
-    ...
+    "car_horn":         0.25,
+    "crying_baby":      0.40,
+    "dog":              0.35,
+    "engine":           0.35,
+    "keyboard_typing":  0.35,
+    "rain":             0.65,
+    "siren":            0.40,
+    "wind":             0.35,
 }
 ```
 
-Copy these into `ANCPredictor` in `src/application/inference.py`.
+Per-class F1 / precision / recall at these thresholds (1500-sample test split):
+
+| Class | Thresh | F1 | Precision | Recall |
+|-------|-------:|---:|----------:|-------:|
+| car_horn        | 0.25 | 0.505 | 0.454 | 0.569 |
+| crying_baby     | 0.40 | 0.745 | 0.780 | 0.713 |
+| dog             | 0.35 | 0.577 | 0.636 | 0.527 |
+| engine          | 0.35 | 0.679 | 0.820 | 0.579 |
+| keyboard_typing | 0.35 | 0.620 | 0.724 | 0.542 |
+| rain            | 0.65 | 0.861 | 0.912 | 0.815 |
+| **siren**       | 0.40 | **0.828** | 0.819 | **0.836** |
+| wind            | 0.35 | 0.636 | 0.633 | 0.639 |
+
+`siren` (the always-pass-through safety class) is the strongest safety
+indicator at 83.6% recall. `car_horn` is the weakest, likely confused with
+engine/siren mid-band energy in synthetic overlaps; since car_horn is a
+user-choice cancel class, its failures are not safety-critical.
+
+Copy the `THRESHOLDS` dict into `ANCPredictor` in
+`src/application/inference.py`.
 
 ---
 

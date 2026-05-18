@@ -96,7 +96,7 @@ class ConditionedSeparatorEvaluator:
         mixer = SeparationMixer(self.csv_path, self.audio_dir,
                                 negative_prob=0.0, seed=self.seed)
         class_names = mixer.class_names
-        model = tf.keras.models.load_model(self.model_path)
+        model = tf.keras.models.load_model(self.model_path, compile=False)
 
         # Draw a fixed test set of (mixture, query, target stem) waveforms.
         examples = [mixer._make_example() for _ in range(self.n_test)]

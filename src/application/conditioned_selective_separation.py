@@ -49,7 +49,7 @@ class ConditionedSelectiveSeparator:
 
         if not model_path.exists():
             raise FileNotFoundError(f"Trained model not found: {model_path}")
-        self.model = tf.keras.models.load_model(model_path)
+        self.model = tf.keras.models.load_model(model_path, compile=False)
         with class_names_path.open() as f:
             self.class_names = json.load(f)
         logging.info(f"Loaded conditioned separator with {len(self.class_names)} classes.")

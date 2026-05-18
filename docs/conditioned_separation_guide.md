@@ -147,13 +147,33 @@ script's `__main__` block — `0.0` removes a sound, `1.0` keeps it,
 
 ---
 
-## 6. Adding more datasets
+## 6. Datasets and adding more
 
-The architecture already scales; only the data layer needs work. In
-`separation_mixer.py`, extend `_load_all_waveforms` to also read the
-new dataset's files into the same per-class cache (resampled to 16 kHz)
-and add its categories to `class_names`. Nothing else changes — the
-model's query input simply grows.
+The clip cache is built by `src/data_preparation/dataset_sources.py`,
+which merges every dataset found under `data/raw/`:
+
+| Dataset | Location | Classes |
+|---------|----------|---------|
+| ESC-50 | `data/raw/archive/` | 50 environmental |
+| UrbanSound8K | `data/raw/urbansound8k/` | 10 urban (4 merge into ESC-50, 6 new) |
+
+Overlapping classes are merged via `CLASS_ALIASES` in
+`dataset_sources.py` (e.g. UrbanSound8K `dog_bark` pools into ESC-50
+`dog`). With both datasets present the model trains on ~56 classes.
+
+The Colab notebook downloads both datasets automatically. To download
+UrbanSound8K manually, fetch
+`https://zenodo.org/record/1203745/files/UrbanSound8K.tar.gz` (~6 GB),
+extract it, and place the `UrbanSound8K` folder at
+`data/raw/urbansound8k/` (so `metadata/UrbanSound8K.csv` and
+`audio/fold1/...` exist).
+
+**To add another dataset** (e.g. FSD50K): write a `load_<name>`
+function in `dataset_sources.py` returning a `{class_name: [waveform]}`
+dict, and call it from `load_all_datasets`. Nothing else changes — the
+mixer, model query size, and training all adapt to the new class count
+automatically. Note: very large datasets that exceed RAM would need the
+cache changed from load-all-into-memory to lazy/disk-backed loading.
 
 ---
 

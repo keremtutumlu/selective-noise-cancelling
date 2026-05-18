@@ -51,8 +51,7 @@ class ConditionedSeparatorTrainer:
 
     def __init__(
         self,
-        csv_path: Path,
-        audio_dir: Path,
+        data_root: Path,
         model_save_dir: Path,
         base_filters: int = 32,
         batch_size: int = 16,
@@ -63,8 +62,7 @@ class ConditionedSeparatorTrainer:
         patience: int = 10,
         seed: int = 42,
     ):
-        self.csv_path = csv_path
-        self.audio_dir = audio_dir
+        self.data_root = data_root
         self.model_save_dir = model_save_dir
         self.base_filters = base_filters
         self.batch_size = batch_size
@@ -82,8 +80,8 @@ class ConditionedSeparatorTrainer:
 
     def _datasets(self) -> Tuple[tf.data.Dataset, tuple, list]:
         """Build the streaming train set and a fixed validation set."""
-        train_mixer = SeparationMixer(self.csv_path, self.audio_dir, seed=self.seed)
-        val_mixer = SeparationMixer(self.csv_path, self.audio_dir, seed=self.seed + 1)
+        train_mixer = SeparationMixer(self.data_root, seed=self.seed)
+        val_mixer = SeparationMixer(self.data_root, seed=self.seed + 1)
         num_classes = train_mixer.num_classes
 
         spec_shape = (FREQ_BINS, TIME_FRAMES, 1)
@@ -172,9 +170,7 @@ class ConditionedSeparatorTrainer:
 
 
 if __name__ == "__main__":
-    archive = BASE_DIR / "data" / "raw" / "archive"
     ConditionedSeparatorTrainer(
-        csv_path=archive / "esc50.csv",
-        audio_dir=archive / "audio" / "audio",
+        data_root=BASE_DIR / "data" / "raw",
         model_save_dir=BASE_DIR / "saved_models" / "separation_models",
     ).train()

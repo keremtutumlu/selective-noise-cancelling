@@ -56,10 +56,9 @@ def si_sdr(estimate: np.ndarray, reference: np.ndarray, eps: float = 1e-8) -> fl
 class ConditionedSeparatorEvaluator:
     """Reconstructs waveforms from the conditioned model and scores SI-SDR."""
 
-    def __init__(self, csv_path: Path, audio_dir: Path, model_path: Path,
+    def __init__(self, data_root: Path, model_path: Path,
                  n_test: int = 800, seed: int = 4242):
-        self.csv_path = csv_path
-        self.audio_dir = audio_dir
+        self.data_root = data_root
         self.model_path = model_path
         self.n_test = n_test
         self.seed = seed
@@ -93,8 +92,7 @@ class ConditionedSeparatorEvaluator:
         print(f"Model : {self.model_path}\n")
 
         # All test examples are positive: the query class is always present.
-        mixer = SeparationMixer(self.csv_path, self.audio_dir,
-                                negative_prob=0.0, seed=self.seed)
+        mixer = SeparationMixer(self.data_root, negative_prob=0.0, seed=self.seed)
         class_names = mixer.class_names
         model = tf.keras.models.load_model(self.model_path, compile=False)
 
@@ -150,9 +148,7 @@ class ConditionedSeparatorEvaluator:
 
 
 if __name__ == "__main__":
-    archive = BASE_DIR / "data" / "raw" / "archive"
     ConditionedSeparatorEvaluator(
-        csv_path=archive / "esc50.csv",
-        audio_dir=archive / "audio" / "audio",
+        data_root=BASE_DIR / "data" / "raw",
         model_path=BASE_DIR / "saved_models" / "separation_models" / "best_conditioned_separator.h5",
     ).evaluate()

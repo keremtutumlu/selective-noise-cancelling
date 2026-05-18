@@ -23,6 +23,7 @@ L1 between the estimated and the true target-stem magnitude.
 Output:
     saved_models/separation_models/best_conditioned_separator.h5
 """
+import json
 import logging
 import sys
 from pathlib import Path
@@ -142,6 +143,13 @@ class ConditionedSeparatorTrainer:
     def train(self) -> Model:
         train_ds, validation_data, class_names = self._datasets()
         logging.info(f"Training on {len(class_names)} classes: {class_names}")
+
+        # Persist the class list so the evaluator and application can build
+        # the one-hot query without re-reading the dataset.
+        names_path = self.model_save_dir / "conditioned_class_names.json"
+        with names_path.open("w") as f:
+            json.dump(class_names, f, indent=2)
+        logging.info(f"Saved class names to {names_path}")
 
         model, cond_unet = self._build_training_model(len(class_names))
         model.compile(

@@ -4,86 +4,71 @@ This file documents the project's architecture and conventions for anyone workin
 
 ## Project Overview
 
-Selective Active Noise Cancellation (SNC) using a MobileNetV2 CNN deployed on Edge AI hardware. The system classifies environmental audio in real-time and applies phase inversion **only** to user-defined noise categories, allowing critical sounds (e.g., sirens) to pass through.
+Query-conditioned source separation for selective sound removal. A FiLM-conditioned U-Net is told *which* sound class to extract from a 1-second audio window and emits a soft spectrogram mask for it. A Gradio web app drives the pipeline end-to-end: upload audio/video → detect present classes → tick which ones to remove → render the cleaned output (audio, and video if the upload had a video track).
+
+> Project conventions (branch names, commits, model file naming, no AI footprint) are defined in `RULES.md`. Read it before any new work — it overrides defaults.
 
 ## Environment Setup
-
-A virtualenv is at `venv/`. Key dependencies: TensorFlow 2.21.0, librosa 0.11.0, soundfile, scikit-learn, numpy, pandas. There is no `requirements.txt` — install from the venv or manually.
 
 ```bash
 source venv/bin/activate
 ```
 
-## Running the Pipeline
+Key deps: TensorFlow 2.21.0, librosa 0.11.0, soundfile, gradio, numpy, pandas. `ffmpeg` and `ffprobe` must be on PATH (the webapp shells out to them for video I/O).
 
-The pipeline has five sequential stages:
+## Pipeline
 
-**1. Multi-label synthetic data generation** (mixes 1–3 ESC-50 clips per sample, in-memory cache):
-```bash
-python src/data_preparation/synthetic_data_generator.py
-```
-Outputs: `data/processed/training_pipeline/{X_multi_features.npy, y_multi_labels.npy, class_names.json}`
+| Stage | Command | Output |
+|---|---|---|
+| 1. Train | `python src/model_training/train_conditioned_separator.py` | `saved_models/separation_models/best_conditioned_separator.h5` + `conditioned_class_names.json` |
+| 2. Evaluate (SI-SDR) | `python src/model_training/evaluate_conditioned_separator.py` | Per-class SI-SDRi table on stdout |
+| 3. Webapp | `python src/application/webapp.py` | Gradio share URL |
 
-**2. Model training** (multi-label MobileNetV2 α=0.35, two-stage transfer learning):
-```bash
-python src/model_training/train.py
-```
-Outputs: `saved_models/base_models/best_mobilenetv2_multilabel.h5`
+The Colab notebooks under `notebooks/` mirror stages 1 and 3 for users without a local GPU.
 
-**3. Edge optimization** (TFLite conversion + INT8 quantization + benchmark):
-```bash
-python src/model_optimization/quantize_for_edge.py
-```
-Outputs: `saved_models/tflite/{model_float32, model_float16, model_dynamic_int8, model_full_int8}.tflite`
-
-**4. C array export for TFLite Micro**:
-```bash
-python src/model_optimization/export_c_header.py
-```
-Outputs: `saved_models/tflm_c_array/{g_anc_model.h, g_anc_model.cc}`
-
-**5. Application scripts** — must be run from within `src/application/` due to local relative imports:
-```bash
-cd src/application
-python simulate_anc.py        # End-to-end: classify → generate anti-noise
-python verify_cancellation.py # Acoustic simulation: measure dB noise reduction
-python inference.py           # Standalone inference on a test audio file
-```
-
-Test audio files go in `data/test_samples/test_sound.wav`. `simulate_anc.py` must run before `verify_cancellation.py` (it produces `anti_phase_test_sound.wav`).
-
-> `data/` and `saved_models/` are gitignored and must be generated locally.
+> `data/` and `saved_models/` are gitignored and must be generated/downloaded locally.
 
 ## Architecture
 
-### Data Flow
+### Data flow
 ```
-ESC-50 raw WAVs → MultiLabelDatasetBuilder → X_multi_features.npy / y_multi_labels.npy / class_names.json
-                → MultiLabelTrainer (MobileNetV2 α=0.35) → best_mobilenetv2_multilabel.h5
-                → EdgeModelOptimizer → model_full_int8.tflite
-                → tflite_to_c_array → g_anc_model.{h,cc}
-                → ANCPredictor → SystemOrchestrator → ActiveNoiseCanceller
+ESC-50 + UrbanSound8K (raw WAVs)
+    → dataset_sources.load_all_datasets        # in-memory {class: [waveform]} cache
+    → SeparationMixer                          # on-the-fly mixtures, queries, target stems
+    → ConditionedSeparatorTrainer              # FiLM U-Net, L1 on magnitude
+    → best_conditioned_separator.h5
+    → webapp.py                                # detect → mask → ISTFT → render
 ```
 
-### Feature Representation
-All audio is resampled to **16 kHz**, then converted to a **Log-Mel Spectrogram** with a 25ms FFT window (`n_fft=400`), 10ms hop (`hop_length=160`), and 64 Mel bins. The single-channel spectrogram is **triplicated into 3 channels** (shape `(64, 101, 3)`) to satisfy MobileNetV2's RGB input requirement. Features are Z-score normalized per sample.
+### Spectrogram contract
+All audio is resampled to **16 kHz mono**. STFT: `n_fft=512`, `hop_length=128`, the Nyquist bin is dropped so the U-Net sees `(FREQ_BINS=256, TIME_FRAMES=128, 1)` log-magnitude inputs. One U-Net call covers ~1 second.
 
-### Training Mode
-Multi-label only: **sigmoid** output, **binary cross-entropy** loss, multi-hot labels. Backbone is MobileNetV2 with width multiplier **α=0.35** so the INT8-quantised model fits a budget MCU (e.g. ESP32-S3) without external PSRAM. Training is two-stage: (1) head-only with frozen ImageNet backbone, (2) full-network fine-tune at 1e-4. Class indices are positions in the alphabetically-sorted `CANONICAL_CLASSES` tuple; `class_names.json` is emitted alongside the .npy files so downstream code does not hard-code the order.
+### Model
+FiLM-conditioned 2-D U-Net (`src/model_training/conditioned_separator.py`):
+- Inputs: log-magnitude `(256, 128, 1)`, one-hot `class_query` `(num_classes,)`
+- The query is embedded and turned into per-channel FiLM scale/shift that modulate the bottleneck features
+- Output: sigmoid soft mask `(256, 128, 1)` in `[0, 1]`
+- Training wrapper multiplies the mask by the linear magnitude inside the graph so the saved `.h5` has three inputs (`[log_mag, class_query, linear_mag]`) and outputs an estimated stem magnitude — no Lambda layers, reloads without custom objects.
+- Loss: L1 between estimated and true stem magnitude.
 
-### Critical Invariant: Class Ordering
-Classes are **always sorted alphabetically** in both training and inference. The canonical 8-class order is:
-`car_horn, crying_baby, dog, engine, keyboard_typing, rain, siren, wind`
+### Datasets
+`src/data_preparation/dataset_sources.py` merges every dataset it finds under `data/raw/`:
+- ESC-50 at `data/raw/archive/` (50 environmental classes)
+- UrbanSound8K at `data/raw/urbansound8k/` (10 urban; 4 alias into ESC-50 via `CLASS_ALIASES`, 6 are new)
 
-`ANCPredictor` enforces `sorted(class_labels)` on init — passing unsorted labels will silently misalign predictions with model weights.
+With both present the mixer exposes ~56 classes. Adding a dataset = writing a new `load_<name>()` and calling it from `load_all_datasets`; the mixer, model query size, and training adapt automatically.
 
-### Application Layer
-`SystemOrchestrator` (`simulate_anc.py`) wires together:
-1. `ANCPredictor` — loads `.h5` model, extracts features, returns `{class: probability}` dict sorted by confidence
-2. `ActiveNoiseCanceller` — if top class is in the user's blocklist, applies `signal × -1.0` (phase inversion) and shifts left by `latency_samples` (default: 48 samples at 3ms hardware delay)
-3. `ANCAcousticSimulator` (`verify_cancellation.py`) — simulates the speaker delay by rolling the anti-noise signal back right, adds original + anti-noise, computes dB RMS reduction
+### Mixer
+`SeparationMixer` (`src/data_preparation/separation_mixer.py`) draws an infinite stream of `(mixture, query, target_stem)` triples. Each example mixes 1–`max_mix` random clips at amplitudes drawn from `amp_range`. With probability `negative_prob` the query asks for an absent class and the target is silence — these negatives teach the model to output near-zero masks for missing classes.
 
-### Edge AI Constraints
-- 1-second audio windows to meet <50ms MCU latency
-- MobileNetV2 chosen over 1D-CNN for computational efficiency
-- INT8 quantization via `src/model_optimization/quantize_for_edge.py` produces a TFLite Micro-compatible model; `export_c_header.py` packages it as an `alignas(16)` C array for direct inclusion in ESP-IDF / STM32CubeIDE projects.
+### Web app
+`src/application/webapp.py` (Gradio):
+- `detect_sounds` — runs the U-Net per class on a few seconds of input and scores `(energy_ratio) × (1 + mask_specificity)`; classes above an absolute floor and a relative gap are surfaced as checkboxes.
+- `remove_sounds` — computes one full-file STFT; for each `TIME_FRAMES`-frame chunk (50% overlap) runs the U-Net for every selected class, combines multiplicative power-ratio masks (`mask = clip(1 − strength·est²/mix², 0, 1)`), smooths the mask over time, applies Hanning-weighted overlap-add on the magnitude, then a single ISTFT with the original phase. For video uploads it muxes the cleaned audio back over the original video track via `ffmpeg`.
+
+## Naming and version control
+
+Per `RULES.md`:
+- **Branches:** `feature/<desc>`, `bugfix/<desc>`, `experiment/<desc>`. No AI references.
+- **Commits:** Capitalised past-tense verb, atomic — e.g. *"Added multi-resolution STFT loss"*, *"Fixed audio click at chunk boundaries"*.
+- **Saved models:** `<task>_<architecture>_<dataset-or-keyfeature>_v<major>.<minor>.<ext>` (e.g. `separator_unet_film_multi_v1.0.h5`). Matching metadata files share the prefix.

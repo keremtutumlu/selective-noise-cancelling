@@ -1,24 +1,20 @@
 # Conditioned Separation Pipeline — Run Guide
 
 How to run the **query-conditioned** source-separation track: train a
-U-Net that is told *which* sound class to extract and removes any chosen
-sounds from an audio file while the rest pass through.
-
-This track lives on the `feature/conditioned-separation` branch. It
-supersedes the fixed 8-class separator (`feature/source-separation`):
-it scales to all 50 ESC-50 classes — and to additional datasets — with
-a single architecture.
+U-Net that is told *which* sound class to extract, and use the Gradio
+web app to remove any chosen sounds from an audio or video file while
+the rest pass through.
 
 ---
 
-## 1. Why this track exists
+## 1. Why this design
 
-The fixed separator emitted one mask per class and pre-generated a
-`stems.npy` file sized `N x num_classes x 16000`. Neither scales: at 50
+A naïve separator emits one mask per class and pre-generates a
+`stems.npy` file sized `N × num_classes × 16000`. Neither scales: at 50
 classes the file is ~19 GB and 47 of every 50 mask channels just
 predict silence.
 
-This track fixes both:
+This pipeline fixes both:
 
 * **On-the-fly mixing** — mixtures are synthesised during training from
   an in-memory clip cache. No dataset file; the class count is
@@ -31,10 +27,12 @@ This track fixes both:
 |-----------|------|
 | Model | `src/model_training/conditioned_separator.py` |
 | Mixer | `src/data_preparation/separation_mixer.py` |
+| Dataset loaders | `src/data_preparation/dataset_sources.py` |
 | Training | `src/model_training/train_conditioned_separator.py` |
 | Evaluation | `src/model_training/evaluate_conditioned_separator.py` |
-| Application | `src/application/conditioned_selective_separation.py` |
-| Colab notebook | `notebooks/colab_train_conditioned_separator.ipynb` |
+| Web app | `src/application/webapp.py` |
+| Colab — training | `notebooks/colab_train_conditioned_separator.ipynb` |
+| Colab — webapp | `notebooks/colab_webapp.ipynb` |
 
 ---
 
@@ -51,16 +49,17 @@ this. T4 is fully supported and trains this model fine.
 
 1. Open `notebooks/colab_train_conditioned_separator.ipynb` in Colab:
    `colab.research.google.com` → *File → Open notebook → GitHub* →
-   `keremtutumlu/selective-noise-cancelling` → branch
-   `feature/conditioned-separation`.
+   `keremtutumlu/selective-noise-cancelling`.
 2. **Runtime → Change runtime type → GPU (T4)**.
 3. Private repo? Add a GitHub token as a Colab Secret named
    `GITHUB_TOKEN` (key icon, scope `repo`).
 4. Run the cells top to bottom. ESC-50 downloads automatically the
    first time; the model checkpoint is written to `MyDrive/snc/`.
 
-The notebook ends with an interactive stage: upload any audio file,
-choose which classes to remove, and download the result.
+Once trained, launch the Gradio web app — locally with `python
+src/application/webapp.py` or on Colab via
+`notebooks/colab_webapp.ipynb` — upload any audio/video file, tick the
+classes to remove, and download the cleaned result.
 
 ---
 
@@ -118,17 +117,17 @@ AVERAGE              ...
 * **SI-SDRi** — improvement of the model over doing nothing. The
   headline number for the thesis.
 
-### Stage 3 — Remove sounds from an audio file
+### Stage 3 — Remove sounds via the web app
 
 ```bash
-python src/application/conditioned_selective_separation.py
+python src/application/webapp.py
 ```
 
-By default this removes `engine` and `wind` from
-`data/test_samples/test_sound.wav` and writes
-`conditioned_separated_output.wav`. Edit the `gains` dict in the
-script's `__main__` block — `0.0` removes a sound, `1.0` keeps it,
-`0.5` halves it. Classes not listed are left untouched.
+Gradio prints a local URL and a public share URL. Upload any audio or
+video file → press *Analyze sounds* → tick the classes to remove →
+adjust the *Removal strength* slider → press *Remove selected sounds*.
+For video uploads the cleaned audio is muxed back over the original
+video track. Audio-only inputs render a "Before / After" audio pair.
 
 ---
 
@@ -186,8 +185,8 @@ cache changed from load-all-into-memory to lazy/disk-backed loading.
 | Training very slow | Running on CPU | Use a Colab GPU runtime |
 | GPU under-used during training | Generator is the bottleneck | Acceptable for a PoC; raise `batch_size` if RAM allows |
 | `Trained model not found` in Stage 3 | Stage 1 not finished | Run Stage 1 first |
-| Faint clicks at 1-second marks in output | Window-boundary artefacts | Expected for the PoC |
 | SI-SDRi near 0 dB | Model under-trained | Raise `epochs` / `steps_per_epoch` in the trainer |
+| Webapp video output has no video track | Input was audio-only `.mp4` | Webapp falls back to audio-only output |
 
 ---
 
@@ -199,9 +198,7 @@ evaluate — the core contribution. Good things to report:
 * Per-class and average SI-SDR / SI-SDRi from Stage 2.
 * The architecture choice: why query conditioning scales where a
   fixed multi-output model does not (the class-imbalance argument).
-* A comparison against AudioSep
-  (`notebooks/colab_source_separation.ipynb`) as a large pre-trained
-  baseline — compact specialised model vs. general-purpose system.
-* Qualitative listening examples from Stage 3.
-* Limitations: window-boundary artefacts, classes with few ESC-50
-  examples, overlapping sounds of similar timbre.
+* Qualitative listening examples produced via the web app (Stage 3).
+* Limitations: classes with few training clips, overlapping sounds of
+  similar timbre, domain gap between studio recordings and reverberant
+  real-world inputs.

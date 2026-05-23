@@ -1,110 +1,64 @@
-# Selective Active Noise Cancellation (SNC) with Edge AI
+# Selective Sound Removal
 
-## Project Overview
+Query-conditioned source separation for selectively removing chosen sound classes (sirens, dog barks, keyboard typing, etc.) from any audio or video file, while leaving everything else untouched. A Gradio web app drives the full pipeline: upload → detect present sounds → tick which to remove → download the cleaned result.
 
-Traditional Active Noise Cancellation (ANC) systems apply blanket cancellation to all ambient noise, which creates safety hazards — blocking ambulance sirens or car horns, for example. This project builds a **Selective Noise Cancelling (SNC)** system using a lightweight CNN deployed on a budget MCU. The model classifies environmental audio in real time and applies destructive interference (phase inversion) **only** to user-defined noise categories, allowing critical sounds to pass through transparently.
+## How it works
 
----
-
-## Current Status
-
-Multi-label classification pipeline complete and validated on CPU.
-
-| Metric | Value |
-|--------|-------|
-| Binary accuracy | 85.9% |
-| AUC (multi-label) | 0.863 |
-| Siren recall @ opt. threshold | **83.6%** |
-| Host CPU inference latency | 39 ms (mean) |
-| INT8 model size (target) | ~450 KB |
-
-The model correctly identifies overlapping sound classes (e.g. siren + engine + rain simultaneously) and is quantised to TFLite INT8 for deployment on an ESP32-S3.
-
----
+A FiLM-conditioned 2-D U-Net takes a 1-second log-magnitude spectrogram plus a one-hot **class query** and returns a soft spectrogram mask for that class. Removal is performed by combining `1 − strength × est²/mix²` ratio masks per selected class, applying spectrogram-level Hanning overlap-add across the file, and inverse-STFT-ing back to audio with the original mixture phase. For video uploads, the cleaned audio is muxed back over the original video track with `ffmpeg`.
 
 ## Pipeline
-
-Run stages in order. Activate the virtualenv first:
 
 ```bash
 source venv/bin/activate
 ```
 
 | Stage | Command | Output |
-|-------|---------|--------|
-| 1. Synthetic data generation | `python src/data_preparation/synthetic_data_generator.py` | `data/processed/training_pipeline/*.npy` |
-| 2. Model training | `python src/model_training/train.py` | `saved_models/base_models/best_mobilenetv2_multilabel.h5` |
-| 3. Model validation | `python tests/test_model.py` | Per-class F1 thresholds printed to stdout |
-| 4. Edge optimisation | `python src/model_optimization/quantize_for_edge.py` | `saved_models/tflite/*.tflite` |
-| 5. C array export | `python src/model_optimization/export_c_header.py` | `saved_models/tflm_c_array/g_anc_model.{h,cc}` |
-| 6. Application sim | `cd src/application && python simulate_anc.py` | `anti_phase_test_sound.wav` |
+|---|---|---|
+| 1. Train | `python src/model_training/train_conditioned_separator.py` | Trained `.h5` + class list under `saved_models/separation_models/` |
+| 2. Evaluate | `python src/model_training/evaluate_conditioned_separator.py` | Per-class SI-SDR / SI-SDRi table |
+| 3. Web app | `python src/application/webapp.py` | Gradio share URL |
 
-See `docs/pipeline_guide.md` for prerequisites, expected runtimes, and troubleshooting.
+Run stages 1 and 3 from the project root. The Colab notebooks under `notebooks/` mirror them for users without a local GPU.
 
----
+`data/raw/` and `saved_models/` are gitignored — see `docs/conditioned_separation_guide.md` for dataset layout and download links.
 
-## Architecture
-
-### Audio Feature Representation
-
-Raw audio → 16 kHz resample → Log-Mel spectrogram → Z-score normalise → 3-channel replicate
+## Spectrogram contract
 
 | Parameter | Value |
-|-----------|-------|
-| Sample rate | 16 000 Hz |
-| FFT window | 25 ms (`n_fft=400`) |
-| Hop length | 10 ms (`hop_length=160`) |
-| Mel bins | 64 |
-| Output tensor | `(64, 101, 3)` |
+|---|---|
+| Sample rate | 16 000 Hz mono |
+| FFT window | `n_fft=512` (32 ms) |
+| Hop length | `hop_length=128` (8 ms) |
+| Bins fed to model | 256 (Nyquist dropped) |
+| Frames per window | 128 (≈1 s) |
+| U-Net input | `(256, 128, 1)` log-magnitude + `(num_classes,)` one-hot query |
+| U-Net output | `(256, 128, 1)` soft mask in `[0, 1]` |
 
-### Model
+## Datasets
 
-MobileNetV2 α=0.35 backbone (ImageNet pretrained) + custom multi-label head:
+The clip cache is assembled by `src/data_preparation/dataset_sources.py` from whatever it finds under `data/raw/`:
 
-```
-GlobalAveragePooling2D → Dropout(0.3) → Dense(128, relu) → Dropout(0.3) → Dense(8, sigmoid)
-```
+| Dataset | Location | Classes |
+|---|---|---|
+| ESC-50 | `data/raw/archive/` | 50 environmental |
+| UrbanSound8K | `data/raw/urbansound8k/` | 10 urban (4 alias into ESC-50, 6 new) |
 
-- **Loss:** Binary Cross-Entropy
-- **Training:** Two-stage transfer learning — head-only warmup (frozen backbone), then full fine-tune at 1e-4
-- **INT8 model:** ~450 KB — fits ESP32-S3 N8R8 flash without external PSRAM
+With both present the model trains on ~56 classes. Add another dataset by writing a `load_<name>()` returning `{class: [waveform]}` and calling it from `load_all_datasets`; the mixer, model query size, and training adapt automatically.
 
-### Target Classes
-
-`car_horn`, `crying_baby`, `dog`, `engine`, `keyboard_typing`, `rain`, `siren` (always pass-through), `wind`
-
-Classes are always kept in alphabetical order — this is a hard contract between the data pipeline, model, and inference code.
-
-### Application Layer
-
-1. **`ANCPredictor`** — extracts log-mel features from a 1-second audio window, returns per-class probabilities
-2. **`ActiveNoiseCanceller`** — if top class is in the user's blocklist, inverts phase and applies 3 ms hardware-latency compensation
-3. **`ANCAcousticSimulator`** — simulates speaker delay, measures RMS noise reduction in dB
-
----
-
-## Repository Structure
+## Repository layout
 
 ```
 selective-noise-cancelling/
 ├── src/
-│   ├── data_preparation/       # Synthetic multi-label dataset generator
-│   ├── model_training/         # Two-stage MobileNetV2 transfer learning
-│   ├── model_optimization/     # TFLite conversion, INT8 quantisation, C array export
-│   └── application/            # Inference, phase inversion, acoustic simulation
-├── tests/
-│   └── test_model.py           # Software-only validation suite (no hardware needed)
-├── docs/
-│   ├── model_and_data.md       # Architecture, feature engineering, training results
-│   └── pipeline_guide.md       # Step-by-step run instructions, troubleshooting
-├── data/                       # ESC-50 raw + processed features (gitignored)
-└── saved_models/               # Keras .h5 and TFLite models (gitignored)
+│   ├── data_preparation/           # dataset loaders + on-the-fly mixer
+│   ├── model_training/             # FiLM U-Net + trainer + SI-SDR evaluator
+│   └── application/                # Gradio web app
+├── notebooks/                      # Colab counterparts (training + webapp)
+├── docs/                           # conditioned_separation_guide.md
+├── data/                           # raw + processed audio (gitignored)
+└── saved_models/                   # Keras checkpoints (gitignored)
 ```
 
----
+## Conventions
 
-## Hardware Target
-
-**ESP32-S3 DevKit** + **INMP441 MEMS microphone** (~$15–20 total)
-
-The INT8 TFLite model is exported as an `alignas(16)` C array via `export_c_header.py` for direct inclusion in ESP-IDF or Arduino_TensorFlowLite firmware.
+Branching, commit style, model file naming, and authorship rules live in `RULES.md`. Read it before opening a PR.

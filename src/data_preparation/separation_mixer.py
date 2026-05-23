@@ -59,7 +59,7 @@ class SeparationMixer:
         target_sr: int = 16000,
         max_mix: int = 4,
         amp_range: Tuple[float, float] = (0.4, 1.0),
-        negative_prob: float = 0.25,
+        negative_prob: float = 0.45,
         seed: int = 42,
     ):
         self.target_sr = target_sr

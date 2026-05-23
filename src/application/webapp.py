@@ -9,8 +9,8 @@ Launch (e.g. on Colab — prints a public share link):
     python src/application/webapp.py
 
 Prerequisites:
-    * saved_models/separation_models/best_conditioned_separator.h5
-    * saved_models/separation_models/conditioned_class_names.json
+    * saved_models/separation_models/separator_unet_film_multi_v2.0.h5
+    * saved_models/separation_models/separator_unet_film_multi_v2.0_classes.json
 """
 import json
 import subprocess
@@ -31,9 +31,10 @@ from conditioned_separator import (  # noqa: E402
 )
 
 _MODELS = BASE_DIR / "saved_models" / "separation_models"
-_model = tf.keras.models.load_model(_MODELS / "best_conditioned_separator.h5",
-                                    compile=False)
-_class_names = json.load((_MODELS / "conditioned_class_names.json").open())
+_model = tf.keras.models.load_model(
+    _MODELS / "separator_unet_film_multi_v2.0.h5", compile=False)
+_class_names = json.load(
+    (_MODELS / "separator_unet_film_multi_v2.0_classes.json").open())
 _VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 
 

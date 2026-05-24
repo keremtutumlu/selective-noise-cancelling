@@ -77,6 +77,13 @@ def detect_sounds(file_path):
     windows = _to_windows(audio)[:8]  # sample up to 8 s for speed
     logs, lins = [], []
     for w in windows:
+        # Match training: SeparationMixer peak-normalises each 1-sec mixture
+        # to time-domain |peak|=1.0, so the model only ever sees STFT mags
+        # in that scale. Raw user audio is often much quieter, which throws
+        # the conditioned U-Net into an untrained input regime.
+        peak = float(np.max(np.abs(w)))
+        if peak > 1e-6:
+            w = w / peak
         _, mag = _spectrograms(w)
         lin = mag[..., None]
         lins.append(lin)
@@ -130,7 +137,15 @@ def remove_sounds(file_path, selected, strength):
         if actual < TIME_FRAMES:
             chunk = np.pad(chunk, ((0, 0), (0, TIME_FRAMES - actual)))
 
-        lin = chunk[..., None]
+        # Per-chunk magnitude rescale to match training input distribution.
+        # Training feeds STFT mags of peak-1.0 time-domain mixtures; the model
+        # is sigmoid-masked and is sensitive to absolute log1p input scale.
+        # The mask itself is a scale-invariant ratio, so we run inference on
+        # the rescaled chunk and apply the resulting mask to the original.
+        chunk_peak = float(np.max(chunk)) + 1e-8
+        chunk_scaled = chunk / chunk_peak
+
+        lin = chunk_scaled[..., None]
         log = np.log1p(lin)
         est = _model.predict(
             [np.repeat(log[None], len(selected), 0),
@@ -143,7 +158,7 @@ def remove_sounds(file_path, selected, strength):
         combined_mask = np.ones((FREQ_BINS, TIME_FRAMES), dtype=np.float32)
         for k in range(len(selected)):
             est_mag = est[k, :, :, 0]
-            amplitude_ratio = np.clip(est_mag / (chunk + 1e-8), 0.0, 1.0)
+            amplitude_ratio = np.clip(est_mag / (chunk_scaled + 1e-8), 0.0, 1.0)
             combined_mask *= np.clip(1.0 - strength * amplitude_ratio, 0.0, 1.0)
 
         # Temporal smoothing along the frame axis to suppress musical noise.

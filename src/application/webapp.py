@@ -117,10 +117,18 @@ def remove_sounds(file_path, selected, strength):
     if not file_path or not selected:
         return None, None, None
     audio = _load_audio(file_path)
+
+    # Time-domain peak normalisation: SeparationMixer normalises every 1-sec
+    # mixture to |peak|=1.0 before computing the STFT.  Applying the same
+    # normalisation once on the whole file is the closest match we can achieve
+    # without re-doing per-window STFT (which would break the global OLA).
+    audio_peak = float(np.max(np.abs(audio))) + 1e-8
+    audio_norm = audio / audio_peak
+
     queries = np.stack([_query(n) for n in selected])
 
     # One STFT for the whole file — phase stays globally consistent.
-    full_stft = librosa.stft(audio, n_fft=N_FFT, hop_length=HOP_LENGTH)
+    full_stft = librosa.stft(audio_norm, n_fft=N_FFT, hop_length=HOP_LENGTH)
     full_mag = np.abs(full_stft)[:FREQ_BINS].astype(np.float32)  # (FREQ_BINS, T)
     T = full_mag.shape[1]
 
@@ -137,15 +145,7 @@ def remove_sounds(file_path, selected, strength):
         if actual < TIME_FRAMES:
             chunk = np.pad(chunk, ((0, 0), (0, TIME_FRAMES - actual)))
 
-        # Per-chunk magnitude rescale to match training input distribution.
-        # Training feeds STFT mags of peak-1.0 time-domain mixtures; the model
-        # is sigmoid-masked and is sensitive to absolute log1p input scale.
-        # The mask itself is a scale-invariant ratio, so we run inference on
-        # the rescaled chunk and apply the resulting mask to the original.
-        chunk_peak = float(np.max(chunk)) + 1e-8
-        chunk_scaled = chunk / chunk_peak
-
-        lin = chunk_scaled[..., None]
+        lin = chunk[..., None]
         log = np.log1p(lin)
         est = _model.predict(
             [np.repeat(log[None], len(selected), 0),
@@ -158,7 +158,7 @@ def remove_sounds(file_path, selected, strength):
         combined_mask = np.ones((FREQ_BINS, TIME_FRAMES), dtype=np.float32)
         for k in range(len(selected)):
             est_mag = est[k, :, :, 0]
-            amplitude_ratio = np.clip(est_mag / (chunk_scaled + 1e-8), 0.0, 1.0)
+            amplitude_ratio = np.clip(est_mag / (chunk + 1e-8), 0.0, 1.0)
             combined_mask *= np.clip(1.0 - strength * amplitude_ratio, 0.0, 1.0)
 
         # Temporal smoothing along the frame axis to suppress musical noise.
@@ -177,8 +177,10 @@ def remove_sounds(file_path, selected, strength):
     out_mag = out_acc / np.maximum(weight_acc, 1e-8)
     out_full = np.vstack([out_mag, np.zeros((1, T), dtype=np.float32)])
     out = librosa.istft(out_full * np.exp(1j * np.angle(full_stft)),
-                        hop_length=HOP_LENGTH, n_fft=N_FFT, length=len(audio))
+                        hop_length=HOP_LENGTH, n_fft=N_FFT, length=len(audio_norm))
 
+    # Restore the original loudness that was removed by peak normalisation.
+    out = out * audio_peak
     peak = np.max(np.abs(out))
     if peak > 1.0:
         out = out / peak

@@ -95,9 +95,9 @@ def detect_sounds(file_path):
         scores[name] = energy_ratio * (1.0 + specificity)
 
     ranked = sorted(scores, key=scores.get, reverse=True)
-    # Absolute floor (0.30) prevents near-zero energy classes from sneaking in
-    # when the winner itself is weak; relative cap (0.40) keeps the gap tight.
-    cutoff = max(0.30, 0.40 * scores[ranked[0]])
+    # Relative cap (0.40) keeps the gap tight; floor is kept low so a
+    # conservative model (high negative_prob) still surfaces real classes.
+    cutoff = max(0.05, 0.40 * scores[ranked[0]])
     detected = [n for n in ranked if scores[n] >= cutoff][:10]
     return gr.update(choices=detected, value=[]), (SAMPLE_RATE, audio)
 
@@ -137,12 +137,14 @@ def remove_sounds(file_path, selected, strength):
              queries,
              np.repeat(lin[None], len(selected), 0)], verbose=0)
 
-        # Multiplicative power-domain ratio masks across all selected classes.
+        # Multiplicative amplitude-ratio masks across all selected classes.
+        # Amplitude ratio (est/mix) is more responsive than power ratio (est²/mix²)
+        # when the model outputs conservative (small) magnitude estimates.
         combined_mask = np.ones((FREQ_BINS, TIME_FRAMES), dtype=np.float32)
         for k in range(len(selected)):
             est_mag = est[k, :, :, 0]
-            power_ratio = (est_mag ** 2) / (chunk ** 2 + 1e-8)
-            combined_mask *= np.clip(1.0 - strength * power_ratio, 0.0, 1.0)
+            amplitude_ratio = np.clip(est_mag / (chunk + 1e-8), 0.0, 1.0)
+            combined_mask *= np.clip(1.0 - strength * amplitude_ratio, 0.0, 1.0)
 
         # Temporal smoothing along the frame axis to suppress musical noise.
         for i in range(FREQ_BINS):

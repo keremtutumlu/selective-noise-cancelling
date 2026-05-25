@@ -37,6 +37,16 @@ from tensorflow.keras import Model
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 from tensorflow.keras.layers import Input, Multiply
 
+BASE_DIR = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(BASE_DIR / "src" / "data_preparation"))
+sys.path.insert(0, str(BASE_DIR / "src" / "model_training"))
+from conditioned_separator import (  # noqa: E402
+    FREQ_BINS, TIME_FRAMES, build_conditioned_separator,
+)
+from separation_mixer import SeparationMixer  # noqa: E402
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
 
 def _multi_res_l1(y_true, y_pred):
     """L1 at full + half + quarter resolution of the magnitude spectrogram.
@@ -50,16 +60,6 @@ def _multi_res_l1(y_true, y_pred):
         y_pred = tf.nn.avg_pool2d(y_pred, ksize=2, strides=2, padding="SAME")
         loss += (0.5 ** i) * tf.reduce_mean(tf.abs(y_true - y_pred))
     return loss
-
-BASE_DIR = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(BASE_DIR / "src" / "data_preparation"))
-sys.path.insert(0, str(BASE_DIR / "src" / "model_training"))
-from conditioned_separator import (  # noqa: E402
-    FREQ_BINS, TIME_FRAMES, build_conditioned_separator,
-)
-from separation_mixer import SeparationMixer  # noqa: E402
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
 class ConditionedSeparatorTrainer:

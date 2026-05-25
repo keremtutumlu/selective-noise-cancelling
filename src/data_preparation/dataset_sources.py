@@ -16,6 +16,7 @@ To add another dataset (e.g. FSD50K), write a ``load_<name>`` function
 that returns the same dict shape and call it from ``load_all_datasets``.
 """
 import logging
+import re
 from pathlib import Path
 from typing import Dict, List
 
@@ -31,17 +32,18 @@ CLASS_ALIASES = {
     # UrbanSound8K → ESC-50
     "dog_bark": "dog",
     "engine_idling": "engine",
-    # FSD50K (AudioSet) → ESC-50 canonical names
+    # FSD50K (AudioSet) → ESC-50 canonical names. Keys are the
+    # *post-normalisation* labels produced by ``_to_snake`` (commas and
+    # spaces collapse to a single underscore), not the raw FSD50K strings.
     "bark": "dog",
     "meow": "cat",
     "laughter": "laughing",
     "cough": "coughing",
     "sneeze": "sneezing",
-    "baby_cry,_infant_cry": "crying_baby",
+    "baby_cry_infant_cry": "crying_baby",
     "alarm": "clock_alarm",
-    "door": "door_wood_knock",
     "rain_on_surface": "rain",
-    "waves,_surf": "sea_waves",
+    "waves_surf": "sea_waves",
 }
 
 
@@ -50,8 +52,7 @@ def _canonical(name: str) -> str:
 
 
 def _to_snake(name: str) -> str:
-    """'Electric guitar' → 'electric_guitar'"""
-    import re
+    """'Electric guitar' → 'electric_guitar'; 'Waves, surf' → 'waves_surf'."""
     return re.sub(r"[\s\-/,]+", "_", name.strip().lower()).strip("_")
 
 

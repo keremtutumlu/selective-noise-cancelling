@@ -5,6 +5,10 @@ Upload an audio or video file; the app detects which sound classes are
 present, lets you pick which to remove (and how strongly), and shows
 the before/after result as playable audio (and video, for video input).
 
+Each selected class also produces an *extracted stem* — the model's
+estimate of what it identified as that class — so you can audibly verify
+the detection before trusting the cleaned output.
+
 Launch (e.g. on Colab — prints a public share link):
     python src/application/webapp.py
 
@@ -36,6 +40,10 @@ _model = tf.keras.models.load_model(
 _class_names = json.load(
     (_MODELS / "separator_unet_film_multi_v2.1_classes.json").open())
 _VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
+
+# Detection surfaces at most 10 classes, so 10 extracted-stem slots is the
+# tightest bound that still covers any selection the user can make.
+MAX_EXTRACTED_SLOTS = 10
 
 
 def _load_audio(path: str) -> np.ndarray:
@@ -69,10 +77,17 @@ def _query(name: str) -> np.ndarray:
     return q
 
 
+def _empty_extracted_slots():
+    """Reset every extracted-stem slot to hidden and empty."""
+    return [gr.update(value=None, visible=False)
+            for _ in range(MAX_EXTRACTED_SLOTS)]
+
+
 def detect_sounds(file_path):
     """Detect present classes using U-Net stem energy + mask specificity score."""
+    cleared = _empty_extracted_slots()
     if not file_path:
-        return gr.update(choices=[], value=[]), None
+        return [gr.update(choices=[], value=[]), None, None, None] + cleared
     audio = _load_audio(file_path)
     windows = _to_windows(audio)[:8]  # sample up to 8 s for speed
     logs, lins = [], []
@@ -106,16 +121,31 @@ def detect_sounds(file_path):
     # conservative model (high negative_prob) still surfaces real classes.
     cutoff = max(0.05, 0.40 * scores[ranked[0]])
     detected = [n for n in ranked if scores[n] >= cutoff][:10]
-    return gr.update(choices=detected, value=[]), (SAMPLE_RATE, audio)
+    return ([gr.update(choices=detected, value=[]),
+             (SAMPLE_RATE, audio), None, None] + cleared)
 
 
 _SMOOTH_KERNEL = np.ones(5, dtype=np.float32) / 5.0  # 5-frame (~40 ms) mask smoother
 
 
+def _istft_with_phase(mag, phase_stft, length, original_peak):
+    """Inverse-STFT a half-band magnitude using a reference complex STFT."""
+    full = np.vstack([mag, np.zeros((1, mag.shape[1]), dtype=np.float32)])
+    wave = librosa.istft(full * np.exp(1j * np.angle(phase_stft)),
+                         hop_length=HOP_LENGTH, n_fft=N_FFT, length=length)
+    wave = wave * original_peak
+    peak = np.max(np.abs(wave))
+    if peak > 1.0:
+        wave = wave / peak
+    return wave
+
+
 def remove_sounds(file_path, selected, strength):
-    """Attenuate selected classes with power-ratio masking and spectrogram OLA."""
+    """Attenuate selected classes and emit per-class extracted stems for
+    audible verification of what each class was detected as."""
+    cleared = _empty_extracted_slots()
     if not file_path or not selected:
-        return None, None, None
+        return [None, None, None] + cleared
     audio = _load_audio(file_path)
 
     # Time-domain peak normalisation: SeparationMixer normalises every 1-sec
@@ -135,6 +165,8 @@ def remove_sounds(file_path, selected, strength):
     # Spectrogram-level 50 % overlap-add accumulators.
     out_acc = np.zeros((FREQ_BINS, T), dtype=np.float32)
     weight_acc = np.zeros(T, dtype=np.float32)
+    # One accumulator per selected class for the extracted-stem display.
+    extract_acc = [np.zeros((FREQ_BINS, T), dtype=np.float32) for _ in selected]
     hann = np.hanning(TIME_FRAMES).astype(np.float32)
     step = TIME_FRAMES // 2  # 64 frames ≈ 0.5 s
 
@@ -160,6 +192,8 @@ def remove_sounds(file_path, selected, strength):
             est_mag = est[k, :, :, 0]
             amplitude_ratio = np.clip(est_mag / (chunk + 1e-8), 0.0, 1.0)
             combined_mask *= np.clip(1.0 - strength * amplitude_ratio, 0.0, 1.0)
+            # Bank the model's per-class stem estimate for playback.
+            extract_acc[k][:, start:end] += hann[:actual] * est_mag[:, :actual]
 
         # Temporal smoothing along the frame axis to suppress musical noise.
         for i in range(FREQ_BINS):
@@ -173,17 +207,16 @@ def remove_sounds(file_path, selected, strength):
         out_acc[:, start:end] += hann[:actual] * processed[:, :actual]
         weight_acc[start:end] += hann[:actual]
 
-    # Normalise, restore Nyquist row, reconstruct with original full-file phase.
+    # Reconstruct cleaned audio.
     out_mag = out_acc / np.maximum(weight_acc, 1e-8)
-    out_full = np.vstack([out_mag, np.zeros((1, T), dtype=np.float32)])
-    out = librosa.istft(out_full * np.exp(1j * np.angle(full_stft)),
-                        hop_length=HOP_LENGTH, n_fft=N_FFT, length=len(audio_norm))
+    out = _istft_with_phase(out_mag, full_stft, len(audio_norm), audio_peak)
 
-    # Restore the original loudness that was removed by peak normalisation.
-    out = out * audio_peak
-    peak = np.max(np.abs(out))
-    if peak > 1.0:
-        out = out / peak
+    # Reconstruct one extracted stem per selected class.
+    extracted_waves = []
+    for k in range(len(selected)):
+        ext_mag = extract_acc[k] / np.maximum(weight_acc, 1e-8)
+        extracted_waves.append(
+            _istft_with_phase(ext_mag, full_stft, len(audio_norm), audio_peak))
 
     out_video = None
     if Path(file_path).suffix.lower() in _VIDEO_EXT:
@@ -202,7 +235,19 @@ def remove_sounds(file_path, selected, strength):
                             "-c:v", "copy", "-map", "0:v:0", "-map", "1:a:0",
                             "-shortest", out_video], check=True)
 
-    return (SAMPLE_RATE, audio), (SAMPLE_RATE, out), out_video
+    # Pack per-class extracts into the fixed UI slots.
+    extracted_updates = []
+    for i in range(MAX_EXTRACTED_SLOTS):
+        if i < len(selected):
+            extracted_updates.append(gr.update(
+                value=(SAMPLE_RATE, extracted_waves[i]),
+                label=f"Extracted as: {selected[i]}",
+                visible=True))
+        else:
+            extracted_updates.append(gr.update(value=None, visible=False))
+
+    return ([(SAMPLE_RATE, audio), (SAMPLE_RATE, out), out_video]
+            + extracted_updates)
 
 
 def build_app() -> gr.Blocks:
@@ -227,11 +272,25 @@ def build_app() -> gr.Blocks:
             after = gr.Audio(label="After")
         after_video = gr.Video(label="After (video)")
 
-        analyze_btn.click(detect_sounds, inputs=file_in,
-                          outputs=[detected, before])
-        process_btn.click(remove_sounds,
-                          inputs=[file_in, detected, strength],
-                          outputs=[before, after, after_video])
+        gr.Markdown(
+            "### Extracted stems — verify what was detected as what\n"
+            "One player per selected class, showing the model's estimate of "
+            "what it heard as that class in the mixture. If the wrong thing "
+            "comes out of a stem, the cleaned audio will reflect that mistake."
+        )
+        extracted_slots = [
+            gr.Audio(label=f"Slot {i + 1}", visible=False)
+            for i in range(MAX_EXTRACTED_SLOTS)
+        ]
+
+        analyze_btn.click(
+            detect_sounds, inputs=file_in,
+            outputs=[detected, before, after, after_video] + extracted_slots,
+        )
+        process_btn.click(
+            remove_sounds, inputs=[file_in, detected, strength],
+            outputs=[before, after, after_video] + extracted_slots,
+        )
     return demo
 
 

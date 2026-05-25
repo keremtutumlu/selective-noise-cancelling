@@ -102,7 +102,7 @@ def detect(model, class_names, audio):
 
 
 def separate(model, class_names, audio, selected, strength: float):
-    """Run the webapp removal pipeline. Returns the cleaned waveform."""
+    """Run the webapp removal pipeline. Returns (cleaned, [extracted_per_class])."""
     queries = np.stack([_query(class_names, n) for n in selected])
     audio_peak = float(np.max(np.abs(audio))) + 1e-8
     audio_norm = audio / audio_peak
@@ -113,6 +113,7 @@ def separate(model, class_names, audio, selected, strength: float):
 
     out_acc = np.zeros((FREQ_BINS, T), dtype=np.float32)
     weight_acc = np.zeros(T, dtype=np.float32)
+    extract_acc = [np.zeros((FREQ_BINS, T), dtype=np.float32) for _ in selected]
     hann = np.hanning(TIME_FRAMES).astype(np.float32)
     step = TIME_FRAMES // 2
 
@@ -132,6 +133,7 @@ def separate(model, class_names, audio, selected, strength: float):
             est_mag = est[k, :, :, 0]
             amplitude_ratio = np.clip(est_mag / (chunk + 1e-8), 0.0, 1.0)
             combined_mask *= np.clip(1.0 - strength * amplitude_ratio, 0.0, 1.0)
+            extract_acc[k][:, start:end] += hann[:actual] * est_mag[:, :actual]
         for i in range(FREQ_BINS):
             combined_mask[i] = np.convolve(combined_mask[i], SMOOTH_KERNEL,
                                            mode="same")
@@ -140,15 +142,18 @@ def separate(model, class_names, audio, selected, strength: float):
         out_acc[:, start:end] += hann[:actual] * processed[:, :actual]
         weight_acc[start:end] += hann[:actual]
 
-    out_mag = out_acc / np.maximum(weight_acc, 1e-8)
-    out_full = np.vstack([out_mag, np.zeros((1, T), dtype=np.float32)])
-    out = librosa.istft(out_full * np.exp(1j * np.angle(full_stft)),
-                        hop_length=HOP_LENGTH, n_fft=N_FFT, length=len(audio_norm))
-    out = out * audio_peak
-    peak = np.max(np.abs(out))
-    if peak > 1.0:
-        out = out / peak
-    return out
+    def _reconstruct(mag_acc):
+        mag = mag_acc / np.maximum(weight_acc, 1e-8)
+        full = np.vstack([mag, np.zeros((1, T), dtype=np.float32)])
+        wave = librosa.istft(full * np.exp(1j * np.angle(full_stft)),
+                             hop_length=HOP_LENGTH, n_fft=N_FFT,
+                             length=len(audio_norm)) * audio_peak
+        p = np.max(np.abs(wave))
+        return wave / p if p > 1.0 else wave
+
+    cleaned = _reconstruct(out_acc)
+    extracted = [_reconstruct(a) for a in extract_acc]
+    return cleaned, extracted
 
 
 def main():
@@ -182,11 +187,18 @@ def main():
             raise ValueError(f"Unknown classes: {unknown}. "
                              f"Available: {sorted(class_names)}")
         print(f"  Separating: {args.classes} at strength {args.strength}\n")
-        out = separate(model, class_names, audio, args.classes, args.strength)
+        cleaned, extracted = separate(model, class_names, audio,
+                                       args.classes, args.strength)
         out_path = args.audio_path.with_name(
             args.audio_path.stem + "_cleaned.wav")
-        sf.write(out_path, out, SAMPLE_RATE)
-        print(f"  Wrote: {out_path}\n")
+        sf.write(out_path, cleaned, SAMPLE_RATE)
+        print(f"  Wrote: {out_path}")
+        for cls, wave in zip(args.classes, extracted):
+            ext_path = args.audio_path.with_name(
+                f"{args.audio_path.stem}_extracted_{cls}.wav")
+            sf.write(ext_path, wave, SAMPLE_RATE)
+            print(f"  Wrote: {ext_path}")
+        print()
     else:
         print("  No classes specified — separation skipped.")
         print("  To remove sounds, add class names as args, e.g.:")

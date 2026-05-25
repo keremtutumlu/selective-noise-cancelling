@@ -33,7 +33,7 @@ from conditioned_separator import (  # noqa: E402
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 ABSOLUTE_FLOOR = 0.05
-RELATIVE_CAP = 0.40
+RELATIVE_CAP = 0.65
 SMOOTH_KERNEL = np.ones(5, dtype=np.float32) / 5.0
 
 
@@ -85,7 +85,7 @@ def detect(model, class_names, audio):
         est = model.predict([logs, q, lins], verbose=0)
         energy_ratio = float(np.mean(est ** 2) / mix_energy)
         specificity = float(np.std(est) / (np.mean(est) + 1e-8))
-        scores[name] = energy_ratio * (1.0 + specificity)
+        scores[name] = energy_ratio * (1.0 + specificity ** 2)
 
     ranked = sorted(scores, key=scores.get, reverse=True)
     cutoff = max(ABSOLUTE_FLOOR, RELATIVE_CAP * scores[ranked[0]])
@@ -115,7 +115,7 @@ def separate(model, class_names, audio, selected, strength: float):
     weight_acc = np.zeros(T, dtype=np.float32)
     extract_acc = [np.zeros((FREQ_BINS, T), dtype=np.float32) for _ in selected]
     hann = np.hanning(TIME_FRAMES).astype(np.float32)
-    step = TIME_FRAMES // 2
+    step = TIME_FRAMES // 4  # 75% overlap reduces boundary artifacts
 
     for start in range(0, T, step):
         end = min(start + TIME_FRAMES, T)
@@ -166,7 +166,7 @@ def main():
                         help="Removal strength in [0, 1] (default: 1.0)")
     parser.add_argument("--model", type=Path,
                         default=BASE_DIR / "saved_models" / "separation_models"
-                                / "separator_unet_film_multi_v2.1.h5")
+                                / "separator_unet_film_multi_v2.2.h5")
     args = parser.parse_args()
 
     classes_path = args.model.with_name(args.model.stem + "_classes.json")

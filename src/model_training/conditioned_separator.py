@@ -18,11 +18,12 @@ Two inputs:
 * ``class_query`` ``(num_classes,)`` — a one-hot vector selecting the
   class to extract.
 
-The query is embedded and turned into **FiLM** parameters (a per-channel
-scale ``gamma`` and shift ``beta``) that modulate the U-Net bottleneck.
-This conditions the whole decoder on the requested class. The output is a
-single soft mask ``(256, 128, 1)`` in ``[0, 1]``; multiplied by the
-mixture magnitude it estimates that class's isolated stem.
+The query is embedded once and turned into **FiLM** parameters (per-channel
+scale ``gamma`` and shift ``beta``) applied at *every encoder level* and
+the bottleneck. Conditioning all levels forces the encoder itself — not
+only the decoder — to build class-specific features, improving mask
+precision. The output is a single soft mask ``(256, 128, 1)`` in ``[0, 1]``;
+multiplied by the mixture magnitude it estimates that class's isolated stem.
 
 To remove several sounds, query the model once per target class.
 
@@ -73,6 +74,7 @@ def build_conditioned_separator(
     input_shape: Tuple[int, int, int] = (FREQ_BINS, TIME_FRAMES, 1),
     num_classes: int = DEFAULT_NUM_CLASSES,
     base_filters: int = 32,
+    embed_dim: int = 128,
 ) -> Model:
     """
     Build the query-conditioned separation U-Net.
@@ -81,7 +83,9 @@ def build_conditioned_separator(
         input_shape: magnitude-spectrogram input, ``(freq, time, 1)``.
         num_classes: size of the one-hot ``class_query`` input.
         base_filters: channels of the first encoder block; deeper levels
-            double it. ``32`` gives a ~8M-parameter model.
+            double it. ``32`` gives a ~8.3M-parameter model.
+        embed_dim: dimension of the shared query embedding used by all
+            FiLM layers.
 
     Returns:
         A Keras ``Model`` mapping ``[log_magnitude, class_query]`` to a
@@ -90,24 +94,29 @@ def build_conditioned_separator(
     log_mag = Input(shape=input_shape, name="mixture_log_magnitude")
     query = Input(shape=(num_classes,), name="class_query")
 
-    # --- Encoder ----------------------------------------------------------
-    e1 = _conv_block(log_mag, base_filters)                  # (256, 128)
-    e2 = _conv_block(MaxPooling2D(2)(e1), base_filters * 2)  # (128, 64)
-    e3 = _conv_block(MaxPooling2D(2)(e2), base_filters * 4)  # (64, 32)
-    e4 = _conv_block(MaxPooling2D(2)(e3), base_filters * 8)  # (32, 16)
-    bottleneck = _conv_block(MaxPooling2D(2)(e4), base_filters * 16)  # (16, 8)
+    # Shared query embedding — computed once, projected separately per level.
+    embedding = Dense(embed_dim, activation="relu", name="query_embedding")(query)
 
-    # --- FiLM conditioning ------------------------------------------------
-    # The class query becomes a per-channel scale (gamma) and shift (beta)
-    # that modulate the bottleneck feature map.
-    channels = base_filters * 16
-    embedding = Dense(128, activation="relu", name="query_embedding")(query)
-    gamma = Reshape((1, 1, channels))(Dense(channels, name="film_gamma")(embedding))
-    beta = Reshape((1, 1, channels))(Dense(channels, name="film_beta")(embedding))
-    conditioned = Add(name="film_apply")([Multiply()([bottleneck, gamma]), beta])
+    def _film(x, channels: int, level: str):
+        """Apply FiLM: x <- gamma * x + beta, with per-level projections."""
+        gamma = Reshape((1, 1, channels))(
+            Dense(channels, name=f"film_gamma_{level}")(embedding))
+        beta = Reshape((1, 1, channels))(
+            Dense(channels, name=f"film_beta_{level}")(embedding))
+        return Add(name=f"film_{level}")([Multiply()([x, gamma]), beta])
 
-    # --- Decoder (skip connections from the matching encoder level) -------
-    d4 = Conv2DTranspose(base_filters * 8, 2, strides=2, padding="same")(conditioned)
+    # --- Encoder with FiLM at every level ---------------------------------
+    e1 = _film(_conv_block(log_mag, base_filters), base_filters, "e1")          # (256, 128)
+    e2 = _film(_conv_block(MaxPooling2D(2)(e1), base_filters * 2), base_filters * 2, "e2")   # (128, 64)
+    e3 = _film(_conv_block(MaxPooling2D(2)(e2), base_filters * 4), base_filters * 4, "e3")   # (64, 32)
+    e4 = _film(_conv_block(MaxPooling2D(2)(e3), base_filters * 8), base_filters * 8, "e4")   # (32, 16)
+    bottleneck = _film(
+        _conv_block(MaxPooling2D(2)(e4), base_filters * 16),
+        base_filters * 16, "bottleneck",
+    )  # (16, 8)
+
+    # --- Decoder (skip connections already carry class-specific features) -
+    d4 = Conv2DTranspose(base_filters * 8, 2, strides=2, padding="same")(bottleneck)
     d4 = _conv_block(Concatenate()([d4, e4]), base_filters * 8)       # (32, 16)
 
     d3 = Conv2DTranspose(base_filters * 4, 2, strides=2, padding="same")(d4)

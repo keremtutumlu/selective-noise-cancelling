@@ -30,7 +30,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # Detection thresholds — kept in sync with webapp.detect_sounds.
 ABSOLUTE_FLOOR = 0.05
-RELATIVE_CAP = 0.40
+RELATIVE_CAP = 0.65
 
 
 def _query(class_names, name):
@@ -65,7 +65,7 @@ def detect_classes(model, class_names, mixture):
         est = model.predict([log[None], q[None], lin[None]], verbose=0)
         energy_ratio = float(np.mean(est ** 2) / mix_energy)
         specificity = float(np.std(est) / (np.mean(est) + 1e-8))
-        scores[name] = energy_ratio * (1.0 + specificity)
+        scores[name] = energy_ratio * (1.0 + specificity ** 2)
 
     ranked = sorted(scores, key=scores.get, reverse=True)
     cutoff = max(ABSOLUTE_FLOOR, RELATIVE_CAP * scores[ranked[0]])
@@ -138,6 +138,6 @@ def evaluate(model_path: Path, data_root: Path, n_test: int = 200,
 if __name__ == "__main__":
     evaluate(
         model_path=BASE_DIR / "saved_models" / "separation_models"
-                            / "separator_unet_film_multi_v2.1.h5",
+                            / "separator_unet_film_multi_v2.2.h5",
         data_root=BASE_DIR / "data" / "raw",
     )

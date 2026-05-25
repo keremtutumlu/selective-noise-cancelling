@@ -86,8 +86,8 @@ Three compounding issues caused the model to fail completely:
 ## v2.1 — Fixed augmentation, corrected inference normalisation
 
 **File:** `separator_unet_film_multi_v2.1.h5`  
-**Trained:** — (pending, retrain from scratch)  
-**Status:** Not yet trained
+**Trained:** May 2026  
+**Status:** Trained — partially working, superseded by v2.2
 
 ### Hyperparameters
 | Parameter | Value | Change from v2.0 |
@@ -127,6 +127,67 @@ python src/model_training/train_conditioned_separator.py
 ```
 
 Output is written to `saved_models/separation_models/separator_unet_film_multi_v2.1.h5`.
+
+### Evaluation results (v2.1)
+
+| Metric | Value |
+|---|---|
+| Diagnose overall | **PASS** (HEALTHY) |
+| SI-SDRi average | **-22.18 dB** |
+| Detection mean F1 | **0.21** |
+| Detection FP : TP | **5.5 : 1** |
+
+**Diagnose detail:** FiLM conditioning works (correct query > wrong query on most classes). Two failing classes: `cat` (−1.00× advantage) and `chirping_birds` (−0.52×).
+
+**SI-SDR detail:** All classes show negative SI-SDRi, meaning the model's reconstructed stem is worse than just using the mixture as an estimate of the stem. Partly a mixture-phase-reuse limitation (spectrogram U-Net), partly evidence that the mask is not tight enough. Best classes: helicopter (−3.4 dB), frog (−10.0 dB), airplane (−6.9 dB).
+
+**Detection detail:** Precision very low (0.10–0.25 for most classes), recall moderate (0.3–0.6). Cutoff too permissive, causing 5.5× more FP than TP. Several classes (chirping_birds, crackling_fire, fireworks, glass_breaking, keyboard_typing, water_drops) had F1 = 0.
+
+**Listening tests (real audio):** Audio quality improved vs v2.0. Removal audible on selected class (e.g., air_conditioner). Two confirmed issues:
+1. Regular pulsing artifact at ~0.25 s intervals (OLA boundary, 50% overlap → fixed in v2.2).
+2. Too many irrelevant classes detected (FP rate → fixed by tighter cutoff in v2.2).
+
+---
+
+## v2.2 — Full-encoder FiLM + multi-resolution loss + tighter detection
+
+**File:** `separator_unet_film_multi_v2.2.h5`  
+**Trained:** — (pending, retrain from scratch)  
+**Status:** Not yet trained
+
+### Hyperparameters
+| Parameter | Value | Change from v2.1 |
+|---|---|---|
+| `base_filters` | 32 | — |
+| `batch_size` | 16 | — |
+| `epochs` | 60 | — |
+| `steps_per_epoch` | 500 | — |
+| `n_val` | 800 | — |
+| `learning_rate` | 1e-3 | — |
+| `patience` | 10 | — |
+| `negative_prob` | 0.30 | — |
+| `bg_noise_prob` | 0.10 | — |
+| `bg_snr_db_range` | (15.0, 30.0) dB | — |
+
+### Dataset
+- ESC-50 + UrbanSound8K (~56 classes)
+- FSD50K support added (auto-detected; adds ~200 classes when present)
+
+### Architecture changes vs v2.1
+- **FiLM at every encoder level** (e1, e2, e3, e4, bottleneck) instead of bottleneck only. Each level gets its own gamma/beta projection from the shared 128-dim query embedding. Skip connections entering the decoder already carry class-specific activations, improving mask precision.
+
+### Training changes vs v2.1
+- **Multi-resolution L1 loss** (full + ½-res + ¼-res spatial pooling, weights 1.0 + 0.5 + 0.25). Coarser scales stabilise the overall spectral shape before fine detail is optimised.
+
+### Inference changes vs v2.1
+- **OLA step**: `TIME_FRAMES // 4` (32 frames ≈ 0.25 s, 75% overlap) instead of `TIME_FRAMES // 2` (50% overlap). Confirmed to reduce audible pulsing artifact at chunk boundaries.
+- **Detection scoring**: `energy_ratio × (1 + CoV²)` instead of `(1 + CoV)`. Squared CoV amplifies the gap between specific and diffuse detections.
+- **Detection cutoff**: 0.65 × winner (was 0.40). Tighter relative threshold reduces FP rate.
+
+### How to train
+```bash
+python src/model_training/train_conditioned_separator.py
+```
 
 ---
 

@@ -28,13 +28,31 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # Cross-dataset duplicate classes are merged onto a single canonical name
 # so their clips pool together instead of becoming separate labels.
 CLASS_ALIASES = {
-    "dog_bark": "dog",          # UrbanSound8K -> ESC-50
-    "engine_idling": "engine",  # UrbanSound8K -> ESC-50
+    # UrbanSound8K → ESC-50
+    "dog_bark": "dog",
+    "engine_idling": "engine",
+    # FSD50K (AudioSet) → ESC-50 canonical names
+    "bark": "dog",
+    "meow": "cat",
+    "laughter": "laughing",
+    "cough": "coughing",
+    "sneeze": "sneezing",
+    "baby_cry,_infant_cry": "crying_baby",
+    "alarm": "clock_alarm",
+    "door": "door_wood_knock",
+    "rain_on_surface": "rain",
+    "waves,_surf": "sea_waves",
 }
 
 
 def _canonical(name: str) -> str:
     return CLASS_ALIASES.get(name, name)
+
+
+def _to_snake(name: str) -> str:
+    """'Electric guitar' → 'electric_guitar'"""
+    import re
+    return re.sub(r"[\s\-/,]+", "_", name.strip().lower()).strip("_")
 
 
 def load_esc50(archive_dir: Path, target_sr: int = 16000) -> Dict[str, List[np.ndarray]]:
@@ -69,13 +87,54 @@ def load_urbansound8k(root_dir: Path, target_sr: int = 16000) -> Dict[str, List[
     return cache
 
 
+def load_fsd50k(root_dir: Path, target_sr: int = 16000) -> Dict[str, List[np.ndarray]]:
+    """Load FSD50K from ``root_dir``.
+
+    Expects the standard FSD50K layout:
+        ``root_dir/FSD50K.ground_truth/dev.csv``
+        ``root_dir/FSD50K.ground_truth/eval.csv``
+        ``root_dir/FSD50K.dev_audio/<fname>.wav``
+        ``root_dir/FSD50K.eval_audio/<fname>.wav``
+
+    Only single-label clips are used to preserve the isolated-source
+    requirement; multi-label clips are skipped.
+    """
+    cache: Dict[str, List[np.ndarray]] = {}
+    total = 0
+    for csv_name, audio_dir_name in [
+        ("FSD50K.ground_truth/dev.csv", "FSD50K.dev_audio"),
+        ("FSD50K.ground_truth/eval.csv", "FSD50K.eval_audio"),
+    ]:
+        csv_path = root_dir / csv_name
+        audio_dir = root_dir / audio_dir_name
+        if not csv_path.exists():
+            continue
+        df = pd.read_csv(csv_path)
+        for _, row in df.iterrows():
+            raw_labels = str(row["labels"]).split(",")
+            if len(raw_labels) != 1:
+                continue
+            cls = _canonical(_to_snake(raw_labels[0]))
+            path = audio_dir / f"{row['fname']}.wav"
+            if not path.exists():
+                continue
+            wav, _ = librosa.load(path, sr=target_sr, mono=True)
+            if wav.size == 0:
+                continue
+            cache.setdefault(cls, []).append(wav.astype(np.float32))
+            total += 1
+    logging.info(f"FSD50K: {total} clips, {len(cache)} classes.")
+    return cache
+
+
 def load_all_datasets(data_root: Path, target_sr: int = 16000) -> Dict[str, List[np.ndarray]]:
     """
     Merge every dataset found under ``data_root`` into one class->clips dict.
 
     Looks for:
-        ``data_root/archive/esc50.csv``                -> ESC-50
-        ``data_root/urbansound8k/metadata/UrbanSound8K.csv`` -> UrbanSound8K
+        ``data_root/archive/esc50.csv``                         -> ESC-50
+        ``data_root/urbansound8k/metadata/UrbanSound8K.csv``    -> UrbanSound8K
+        ``data_root/fsd50k/FSD50K.ground_truth/dev.csv``        -> FSD50K
     """
     merged: Dict[str, List[np.ndarray]] = {}
 
@@ -87,6 +146,11 @@ def load_all_datasets(data_root: Path, target_sr: int = 16000) -> Dict[str, List
     us8k_dir = data_root / "urbansound8k"
     if (us8k_dir / "metadata" / "UrbanSound8K.csv").exists():
         for cls, clips in load_urbansound8k(us8k_dir, target_sr).items():
+            merged.setdefault(cls, []).extend(clips)
+
+    fsd50k_dir = data_root / "fsd50k"
+    if (fsd50k_dir / "FSD50K.ground_truth" / "dev.csv").exists():
+        for cls, clips in load_fsd50k(fsd50k_dir, target_sr).items():
             merged.setdefault(cls, []).extend(clips)
 
     if not merged:

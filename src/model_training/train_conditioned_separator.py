@@ -18,11 +18,12 @@ For training it is wrapped so a standard ``model.fit`` works:
 
 The mask is applied to the linear magnitude with a plain Multiply layer
 (no Lambda — the saved ``.h5`` reloads without custom objects). Loss is
-L1 between the estimated and the true target-stem magnitude.
+a multi-resolution L1 (full + half + quarter resolution) between the
+estimated and the true target-stem magnitude.
 
 Output:
-    saved_models/separation_models/separator_unet_film_multi_v2.1.h5
-    saved_models/separation_models/separator_unet_film_multi_v2.1_classes.json
+    saved_models/separation_models/separator_unet_film_multi_v2.2.h5
+    saved_models/separation_models/separator_unet_film_multi_v2.2_classes.json
 """
 import json
 import logging
@@ -35,6 +36,20 @@ import tensorflow as tf
 from tensorflow.keras import Model
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 from tensorflow.keras.layers import Input, Multiply
+
+
+def _multi_res_l1(y_true, y_pred):
+    """L1 at full + half + quarter resolution of the magnitude spectrogram.
+
+    Coarser scales help the model converge on the overall spectral shape
+    before fine-tuning individual bin values, improving mask quality.
+    """
+    loss = tf.reduce_mean(tf.abs(y_true - y_pred))
+    for i in range(1, 3):
+        y_true = tf.nn.avg_pool2d(y_true, ksize=2, strides=2, padding="SAME")
+        y_pred = tf.nn.avg_pool2d(y_pred, ksize=2, strides=2, padding="SAME")
+        loss += (0.5 ** i) * tf.reduce_mean(tf.abs(y_true - y_pred))
+    return loss
 
 BASE_DIR = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(BASE_DIR / "src" / "data_preparation"))
@@ -75,7 +90,7 @@ class ConditionedSeparatorTrainer:
         self.seed = seed
 
         self.model_save_dir.mkdir(parents=True, exist_ok=True)
-        self.checkpoint_path = self.model_save_dir / "separator_unet_film_multi_v2.1.h5"
+        self.checkpoint_path = self.model_save_dir / "separator_unet_film_multi_v2.2.h5"
 
         tf.keras.utils.set_random_seed(seed)
 
@@ -145,7 +160,7 @@ class ConditionedSeparatorTrainer:
 
         # Persist the class list so the evaluator and application can build
         # the one-hot query without re-reading the dataset.
-        names_path = self.model_save_dir / "separator_unet_film_multi_v2.1_classes.json"
+        names_path = self.model_save_dir / "separator_unet_film_multi_v2.2_classes.json"
         with names_path.open("w") as f:
             json.dump(class_names, f, indent=2)
         logging.info(f"Saved class names to {names_path}")
@@ -153,7 +168,7 @@ class ConditionedSeparatorTrainer:
         model, cond_unet = self._build_training_model(len(class_names))
         model.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=self.learning_rate),
-            loss="mae",
+            loss=_multi_res_l1,
         )
         cond_unet.summary(print_fn=logging.info)
         logging.info(f"Training model parameters: {model.count_params():,}")

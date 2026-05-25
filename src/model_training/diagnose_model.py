@@ -153,6 +153,6 @@ def diagnose(model_path: Path, data_root: Path, n_classes: int = 12,
 if __name__ == "__main__":
     diagnose(
         model_path=BASE_DIR / "saved_models" / "separation_models"
-                            / "separator_unet_film_multi_v2.1.h5",
+                            / "separator_unet_film_multi_v2.2.h5",
         data_root=BASE_DIR / "data" / "raw",
     )

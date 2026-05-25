@@ -13,8 +13,8 @@ Launch (e.g. on Colab — prints a public share link):
     python src/application/webapp.py
 
 Prerequisites:
-    * saved_models/separation_models/separator_unet_film_multi_v2.1.h5
-    * saved_models/separation_models/separator_unet_film_multi_v2.1_classes.json
+    * saved_models/separation_models/separator_unet_film_multi_v2.2.h5
+    * saved_models/separation_models/separator_unet_film_multi_v2.2_classes.json
 """
 import json
 import subprocess
@@ -36,9 +36,9 @@ from conditioned_separator import (  # noqa: E402
 
 _MODELS = BASE_DIR / "saved_models" / "separation_models"
 _model = tf.keras.models.load_model(
-    _MODELS / "separator_unet_film_multi_v2.1.h5", compile=False)
+    _MODELS / "separator_unet_film_multi_v2.2.h5", compile=False)
 _class_names = json.load(
-    (_MODELS / "separator_unet_film_multi_v2.1_classes.json").open())
+    (_MODELS / "separator_unet_film_multi_v2.2_classes.json").open())
 _VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 
 # Detection surfaces at most 10 classes, so 10 extracted-stem slots is the
@@ -111,15 +111,17 @@ def detect_sounds(file_path):
         q = np.tile(_query(name), (len(windows), 1))
         est = _model.predict([logs, q, lins], verbose=0)
         energy_ratio = float(np.mean(est ** 2) / mix_energy)
-        # Coefficient of variation: real sounds produce concentrated masks
-        # (high std); broadband noise produces diffuse, uniform masks (low std).
+        # CoV²: real sounds produce concentrated masks (high CoV); broadband
+        # noise produces diffuse uniform masks (low CoV). Squaring sharpens
+        # the gap between specific and diffuse detections.
         specificity = float(np.std(est) / (np.mean(est) + 1e-8))
-        scores[name] = energy_ratio * (1.0 + specificity)
+        scores[name] = energy_ratio * (1.0 + specificity ** 2)
 
     ranked = sorted(scores, key=scores.get, reverse=True)
-    # Relative cap (0.40) keeps the gap tight; floor is kept low so a
-    # conservative model (high negative_prob) still surfaces real classes.
-    cutoff = max(0.05, 0.40 * scores[ranked[0]])
+    # Relative cap at 0.65 of the winner (tighter than the old 0.40) to
+    # reduce false positives; absolute floor keeps very quiet but real
+    # classes reachable.
+    cutoff = max(0.05, 0.65 * scores[ranked[0]])
     detected = [n for n in ranked if scores[n] >= cutoff][:10]
     return ([gr.update(choices=detected, value=[]),
              (SAMPLE_RATE, audio), None, None] + cleared)
@@ -168,7 +170,7 @@ def remove_sounds(file_path, selected, strength):
     # One accumulator per selected class for the extracted-stem display.
     extract_acc = [np.zeros((FREQ_BINS, T), dtype=np.float32) for _ in selected]
     hann = np.hanning(TIME_FRAMES).astype(np.float32)
-    step = TIME_FRAMES // 2  # 64 frames ≈ 0.5 s
+    step = TIME_FRAMES // 4  # 32 frames ≈ 0.25 s — 75% overlap reduces boundary artifacts
 
     for start in range(0, T, step):
         end = min(start + TIME_FRAMES, T)

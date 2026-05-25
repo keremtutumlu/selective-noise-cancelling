@@ -88,7 +88,8 @@ def load_urbansound8k(root_dir: Path, target_sr: int = 16000) -> Dict[str, List[
     return cache
 
 
-def load_fsd50k(root_dir: Path, target_sr: int = 16000) -> Dict[str, List[np.ndarray]]:
+def load_fsd50k(root_dir: Path, target_sr: int = 16000,
+                max_duration: float = 4.0) -> Dict[str, List[np.ndarray]]:
     """Load FSD50K from ``root_dir``.
 
     Expects the standard FSD50K layout:
@@ -98,7 +99,9 @@ def load_fsd50k(root_dir: Path, target_sr: int = 16000) -> Dict[str, List[np.nda
         ``root_dir/FSD50K.eval_audio/<fname>.wav``
 
     Only single-label clips are used to preserve the isolated-source
-    requirement; multi-label clips are skipped.
+    requirement; multi-label clips are skipped. Clips are trimmed to
+    ``max_duration`` seconds on load to keep total RAM usage bounded
+    (the mixer only ever takes random 1-second windows anyway).
     """
     cache: Dict[str, List[np.ndarray]] = {}
     total = 0
@@ -119,7 +122,8 @@ def load_fsd50k(root_dir: Path, target_sr: int = 16000) -> Dict[str, List[np.nda
             path = audio_dir / f"{row['fname']}.wav"
             if not path.exists():
                 continue
-            wav, _ = librosa.load(path, sr=target_sr, mono=True)
+            wav, _ = librosa.load(path, sr=target_sr, mono=True,
+                                  duration=max_duration)
             if wav.size == 0:
                 continue
             cache.setdefault(cls, []).append(wav.astype(np.float32))

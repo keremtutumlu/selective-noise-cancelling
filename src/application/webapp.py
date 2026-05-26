@@ -12,9 +12,10 @@ the detection before trusting the cleaned output.
 Launch (e.g. on Colab — prints a public share link):
     python src/application/webapp.py
 
-Prerequisites:
-    * saved_models/separation_models/separator_unet_film_multi_v2.3.h5
-    * saved_models/separation_models/separator_unet_film_multi_v2.3_classes.json
+The app auto-discovers every trained checkpoint in
+``saved_models/separation_models/`` (any ``separator_unet_film_multi_*.h5``
+with a matching ``*_classes.json``) and exposes them in a dropdown so the
+automation sweep's outputs can be compared by ear without editing code.
 """
 import json
 import subprocess
@@ -34,12 +35,47 @@ from conditioned_separator import (  # noqa: E402
     FREQ_BINS, HOP_LENGTH, N_FFT, SAMPLE_RATE, TIME_FRAMES,
 )
 
-_MODELS = BASE_DIR / "saved_models" / "separation_models"
-_model = tf.keras.models.load_model(
-    _MODELS / "separator_unet_film_multi_v2.3.h5", compile=False)
-_class_names = json.load(
-    (_MODELS / "separator_unet_film_multi_v2.3_classes.json").open())
+_MODELS_DIR = BASE_DIR / "saved_models" / "separation_models"
 _VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
+
+# In-process model cache. Loading a Keras .h5 is slow (~5-10 s on T4) so we
+# cache each model the first time the user selects it from the dropdown.
+_loaded: dict = {}
+_current: dict = {"name": None, "model": None, "class_names": None}
+
+
+def _available_models() -> list[tuple[str, Path]]:
+    """Every .h5 in the model dir that has a matching _classes.json."""
+    pairs = []
+    for h5 in sorted(_MODELS_DIR.glob("separator_unet_film_multi_*.h5")):
+        names_path = h5.with_name(h5.stem + "_classes.json")
+        if names_path.exists():
+            pairs.append((h5.stem, h5))
+    return pairs
+
+
+def _load_model(name: str) -> None:
+    """Load ``name`` into the cache and mark it current."""
+    if name in _loaded:
+        _current.update(name=name, **_loaded[name])
+        return
+    h5 = _MODELS_DIR / f"{name}.h5"
+    classes = _MODELS_DIR / f"{name}_classes.json"
+    model = tf.keras.models.load_model(h5, compile=False)
+    class_names = json.load(classes.open())
+    _loaded[name] = {"model": model, "class_names": class_names}
+    _current.update(name=name, model=model, class_names=class_names)
+    print(f"Loaded model '{name}' ({len(class_names)} classes).")
+
+
+# Pre-load the most recently modified model so first detection is fast.
+_initial = _available_models()
+if not _initial:
+    raise FileNotFoundError(
+        f"No trained models found under {_MODELS_DIR}. Expected at least one "
+        f"'separator_unet_film_multi_*.h5' with a matching '*_classes.json'.")
+_default_name = max(_initial, key=lambda p: p[1].stat().st_mtime)[0]
+_load_model(_default_name)
 
 # Detection surfaces at most 10 classes, so 10 extracted-stem slots is the
 # tightest bound that still covers any selection the user can make.
@@ -72,8 +108,9 @@ def _spectrograms(window: np.ndarray):
 
 
 def _query(name: str) -> np.ndarray:
-    q = np.zeros(len(_class_names), np.float32)
-    q[_class_names.index(name)] = 1.0
+    class_names = _current["class_names"]
+    q = np.zeros(len(class_names), np.float32)
+    q[class_names.index(name)] = 1.0
     return q
 
 
@@ -107,9 +144,10 @@ def detect_sounds(file_path):
 
     mix_energy = float(np.mean(lins ** 2)) + 1e-8
     scores = {}
-    for name in _class_names:
+    model = _current["model"]
+    for name in _current["class_names"]:
         q = np.tile(_query(name), (len(windows), 1))
-        est = _model.predict([logs, q, lins], verbose=0)
+        est = model.predict([logs, q, lins], verbose=0)
         energy_ratio = float(np.mean(est ** 2) / mix_energy)
         # CoV²: real sounds produce concentrated masks (high CoV); broadband
         # noise produces diffuse uniform masks (low CoV). Squaring sharpens
@@ -181,7 +219,7 @@ def remove_sounds(file_path, selected, strength):
 
         lin = chunk[..., None]
         log = np.log1p(lin)
-        est = _model.predict(
+        est = _current["model"].predict(
             [np.repeat(log[None], len(selected), 0),
              queries,
              np.repeat(lin[None], len(selected), 0)], verbose=0)
@@ -252,13 +290,31 @@ def remove_sounds(file_path, selected, strength):
             + extracted_updates)
 
 
+def _on_model_change(name: str) -> str:
+    """Dropdown callback: load the selected checkpoint and report its class count."""
+    _load_model(name)
+    return f"Active model: **{name}** — {len(_current['class_names'])} classes."
+
+
 def build_app() -> gr.Blocks:
+    available = [name for name, _ in _available_models()]
     with gr.Blocks(title="Selective Sound Removal") as demo:
         gr.Markdown(
             "# Selective Sound Removal\n"
             "Upload an audio or video file, detect the sounds in it, and "
             "remove the ones you choose."
         )
+        with gr.Row():
+            model_dd = gr.Dropdown(
+                choices=available, value=_current["name"],
+                label="Model", scale=3,
+                info="Trained checkpoints in saved_models/separation_models/. "
+                     "Switch to compare automation-sweep outputs.")
+            model_status = gr.Markdown(
+                f"Active model: **{_current['name']}** — "
+                f"{len(_current['class_names'])} classes.")
+        model_dd.change(_on_model_change, inputs=model_dd, outputs=model_status)
+
         file_in = gr.File(label="Upload audio or video", type="filepath")
         analyze_btn = gr.Button("1. Analyze sounds", variant="primary")
 

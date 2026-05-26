@@ -208,3 +208,7 @@ __marimo__/
 
 /data
 /saved_models
+
+# Automation run logs — regenerated every sweep
+/experiments/results.csv
+/experiments/results.md

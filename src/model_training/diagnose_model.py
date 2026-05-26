@@ -63,7 +63,8 @@ def _model_input(waveform):
 
 
 def diagnose(model_path: Path, data_root: Path, n_classes: int = 12,
-             seed: int = 0):
+             seed: int = 0) -> dict:
+    """Run all three health tests and return a metric dict."""
     print(f"\nModel diagnostic — {model_path.name}")
     print(f"Data root    — {data_root}\n")
 
@@ -147,7 +148,12 @@ def diagnose(model_path: Path, data_root: Path, n_classes: int = 12,
     print("=" * 60)
     print(f"  OVERALL: {'HEALTHY — model produces class-specific output' if overall else 'BROKEN — model has collapsed or failed to learn class conditioning'}")
     print("=" * 60 + "\n")
-    return overall
+    return {
+        "pass": overall,
+        "mean_out_in_ratio": mean_ratio,
+        "film_advantage": advantage,
+        "mean_class_advantage": mean_adv,
+    }
 
 
 if __name__ == "__main__":

@@ -74,7 +74,8 @@ def detect_classes(model, class_names, mixture):
 
 
 def evaluate(model_path: Path, data_root: Path, n_test: int = 200,
-             seed: int = 7777):
+             seed: int = 7777) -> dict:
+    """Run the detection sweep and return a metric dict alongside the printout."""
     print(f"\nDetection Evaluation — {model_path.name}")
     print(f"Test mixtures: {n_test}\n")
 
@@ -133,6 +134,13 @@ def evaluate(model_path: Path, data_root: Path, n_test: int = 200,
     print(f"  Total false positives: {sum(fp.values())}")
     print(f"  Total false negatives: {sum(fn.values())}")
     print("=" * 60 + "\n")
+    return {
+        "f1_mean": float(np.mean(f1s)) if f1s else 0.0,
+        "tp_total": int(sum(tp.values())),
+        "fp_total": int(sum(fp.values())),
+        "fn_total": int(sum(fn.values())),
+        "n_test": n_test,
+    }
 
 
 if __name__ == "__main__":

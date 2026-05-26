@@ -69,6 +69,7 @@ class ConditionedSeparatorTrainer:
         self,
         data_root: Path,
         model_save_dir: Path,
+        model_version: str = "v2.3",
         base_filters: int = 32,
         batch_size: int = 16,
         epochs: int = 60,
@@ -77,9 +78,15 @@ class ConditionedSeparatorTrainer:
         learning_rate: float = 1e-3,
         patience: int = 10,
         seed: int = 42,
+        # Mixer hyperparameters — automation sweeps usually vary these.
+        negative_prob: float = 0.15,
+        bg_noise_prob: float = 0.10,
+        bg_snr_db_range: Tuple[float, float] = (15.0, 30.0),
+        max_mix: int = 4,
     ):
         self.data_root = data_root
         self.model_save_dir = model_save_dir
+        self.model_version = model_version
         self.base_filters = base_filters
         self.batch_size = batch_size
         self.epochs = epochs
@@ -88,16 +95,32 @@ class ConditionedSeparatorTrainer:
         self.learning_rate = learning_rate
         self.patience = patience
         self.seed = seed
+        self.negative_prob = negative_prob
+        self.bg_noise_prob = bg_noise_prob
+        self.bg_snr_db_range = bg_snr_db_range
+        self.max_mix = max_mix
 
         self.model_save_dir.mkdir(parents=True, exist_ok=True)
-        self.checkpoint_path = self.model_save_dir / "separator_unet_film_multi_v2.3.h5"
+        stem = f"separator_unet_film_multi_{model_version}"
+        self.checkpoint_path = self.model_save_dir / f"{stem}.h5"
+        self.classes_path = self.model_save_dir / f"{stem}_classes.json"
 
         tf.keras.utils.set_random_seed(seed)
 
+    def _mixer(self, seed_offset: int = 0) -> SeparationMixer:
+        return SeparationMixer(
+            self.data_root,
+            max_mix=self.max_mix,
+            negative_prob=self.negative_prob,
+            bg_noise_prob=self.bg_noise_prob,
+            bg_snr_db_range=self.bg_snr_db_range,
+            seed=self.seed + seed_offset,
+        )
+
     def _datasets(self) -> Tuple[tf.data.Dataset, tuple, list]:
         """Build the streaming train set and a fixed validation set."""
-        train_mixer = SeparationMixer(self.data_root, seed=self.seed)
-        val_mixer = SeparationMixer(self.data_root, seed=self.seed + 1)
+        train_mixer = self._mixer(0)
+        val_mixer = self._mixer(1)
         num_classes = train_mixer.num_classes
 
         spec_shape = (FREQ_BINS, TIME_FRAMES, 1)
@@ -160,10 +183,9 @@ class ConditionedSeparatorTrainer:
 
         # Persist the class list so the evaluator and application can build
         # the one-hot query without re-reading the dataset.
-        names_path = self.model_save_dir / "separator_unet_film_multi_v2.3_classes.json"
-        with names_path.open("w") as f:
+        with self.classes_path.open("w") as f:
             json.dump(class_names, f, indent=2)
-        logging.info(f"Saved class names to {names_path}")
+        logging.info(f"Saved class names to {self.classes_path}")
 
         model, cond_unet = self._build_training_model(len(class_names))
         model.compile(

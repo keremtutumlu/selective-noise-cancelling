@@ -87,7 +87,8 @@ class ConditionedSeparatorEvaluator:
         return librosa.istft(stft, hop_length=HOP_LENGTH, n_fft=N_FFT,
                              length=SAMPLE_RATE)
 
-    def evaluate(self) -> None:
+    def evaluate(self) -> dict:
+        """Run the evaluation and return a metric dict alongside the printout."""
         print("\nConditioned Separator — Evaluation Report")
         print(f"Model : {self.model_path}\n")
 
@@ -145,6 +146,12 @@ class ConditionedSeparatorEvaluator:
         print(f"\n  SI-SDRi (improvement over the unprocessed mixture): "
               f"{mean_model - mean_mix:+.2f} dB")
         print("=" * 68 + "\n")
+        return {
+            "si_sdri": mean_model - mean_mix,
+            "si_sdr_model": mean_model,
+            "si_sdr_mix": mean_mix,
+            "n_scored": len(all_model),
+        }
 
 
 if __name__ == "__main__":

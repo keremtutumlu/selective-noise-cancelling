@@ -98,13 +98,16 @@ def load_fsd50k(root_dir: Path, target_sr: int = 16000,
         ``root_dir/FSD50K.dev_audio/<fname>.wav``
         ``root_dir/FSD50K.eval_audio/<fname>.wav``
 
-    Only single-label clips are used to preserve the isolated-source
-    requirement; multi-label clips are skipped. Clips are trimmed to
+    FSD50K labels are AudioSet-hierarchical, so almost every clip has
+    multiple comma-separated labels (e.g. ``"Bark,Dog,Animal"``). The
+    first label is taken as the canonical class: it's the leaf/most
+    specific entry per FSD50K convention. Clips are trimmed to
     ``max_duration`` seconds on load to keep total RAM usage bounded
     (the mixer only ever takes random 1-second windows anyway).
     """
     cache: Dict[str, List[np.ndarray]] = {}
     total = 0
+    missing_audio = 0
     for csv_name, audio_dir_name in [
         ("FSD50K.ground_truth/dev.csv", "FSD50K.dev_audio"),
         ("FSD50K.ground_truth/eval.csv", "FSD50K.eval_audio"),
@@ -113,14 +116,16 @@ def load_fsd50k(root_dir: Path, target_sr: int = 16000,
         audio_dir = root_dir / audio_dir_name
         if not csv_path.exists():
             continue
+        if not audio_dir.exists():
+            logging.warning(f"FSD50K: {audio_dir} not found, skipping {csv_name}.")
+            continue
         df = pd.read_csv(csv_path)
         for _, row in df.iterrows():
             raw_labels = str(row["labels"]).split(",")
-            if len(raw_labels) != 1:
-                continue
             cls = _canonical(_to_snake(raw_labels[0]))
             path = audio_dir / f"{row['fname']}.wav"
             if not path.exists():
+                missing_audio += 1
                 continue
             wav, _ = librosa.load(path, sr=target_sr, mono=True,
                                   duration=max_duration)
@@ -128,6 +133,8 @@ def load_fsd50k(root_dir: Path, target_sr: int = 16000,
                 continue
             cache.setdefault(cls, []).append(wav.astype(np.float32))
             total += 1
+    if missing_audio:
+        logging.warning(f"FSD50K: {missing_audio} CSV rows had no matching audio file.")
     logging.info(f"FSD50K: {total} clips, {len(cache)} classes.")
     return cache
 

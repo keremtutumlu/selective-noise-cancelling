@@ -22,8 +22,8 @@ a multi-resolution L1 (full + half + quarter resolution) between the
 estimated and the true target-stem magnitude.
 
 Output:
-    saved_models/separation_models/separator_unet_film_multi_v2.2.h5
-    saved_models/separation_models/separator_unet_film_multi_v2.2_classes.json
+    saved_models/separation_models/separator_unet_film_multi_v2.3.h5
+    saved_models/separation_models/separator_unet_film_multi_v2.3_classes.json
 """
 import json
 import logging
@@ -90,7 +90,7 @@ class ConditionedSeparatorTrainer:
         self.seed = seed
 
         self.model_save_dir.mkdir(parents=True, exist_ok=True)
-        self.checkpoint_path = self.model_save_dir / "separator_unet_film_multi_v2.2.h5"
+        self.checkpoint_path = self.model_save_dir / "separator_unet_film_multi_v2.3.h5"
 
         tf.keras.utils.set_random_seed(seed)
 
@@ -160,7 +160,7 @@ class ConditionedSeparatorTrainer:
 
         # Persist the class list so the evaluator and application can build
         # the one-hot query without re-reading the dataset.
-        names_path = self.model_save_dir / "separator_unet_film_multi_v2.2_classes.json"
+        names_path = self.model_save_dir / "separator_unet_film_multi_v2.3_classes.json"
         with names_path.open("w") as f:
             json.dump(class_names, f, indent=2)
         logging.info(f"Saved class names to {names_path}")

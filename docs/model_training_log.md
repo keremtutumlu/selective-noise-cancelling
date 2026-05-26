@@ -152,8 +152,8 @@ Output is written to `saved_models/separation_models/separator_unet_film_multi_v
 ## v2.2 — Full-encoder FiLM + multi-resolution loss + tighter detection
 
 **File:** `separator_unet_film_multi_v2.2.h5`  
-**Trained:** — (pending, retrain from scratch)  
-**Status:** Not yet trained
+**Trained:** May 2026  
+**Status:** Trained — boundary pulsing fixed, but removal too gentle and detection unreliable; superseded by v2.3
 
 ### Hyperparameters
 | Parameter | Value | Change from v2.1 |
@@ -171,7 +171,7 @@ Output is written to `saved_models/separation_models/separator_unet_film_multi_v
 
 ### Dataset
 - ESC-50 + UrbanSound8K (~56 classes)
-- FSD50K support added (auto-detected; adds ~200 classes when present)
+- FSD50K support added (auto-detected); however, FSD50K loaded **0 clips** in this run due to a single-label filter bug (AudioSet uses hierarchical comma-separated labels — the filter rejected all clips). Fixed in the post-train commit (6a77461); will take effect from v2.3 onward.
 
 ### Architecture changes vs v2.1
 - **FiLM at every encoder level** (e1, e2, e3, e4, bottleneck) instead of bottleneck only. Each level gets its own gamma/beta projection from the shared 128-dim query embedding. Skip connections entering the decoder already carry class-specific activations, improving mask precision.
@@ -180,9 +180,57 @@ Output is written to `saved_models/separation_models/separator_unet_film_multi_v
 - **Multi-resolution L1 loss** (full + ½-res + ¼-res spatial pooling, weights 1.0 + 0.5 + 0.25). Coarser scales stabilise the overall spectral shape before fine detail is optimised.
 
 ### Inference changes vs v2.1
-- **OLA step**: `TIME_FRAMES // 4` (32 frames ≈ 0.25 s, 75% overlap) instead of `TIME_FRAMES // 2` (50% overlap). Confirmed to reduce audible pulsing artifact at chunk boundaries.
+- **OLA step**: `TIME_FRAMES // 4` (32 frames ≈ 0.25 s, 75% overlap) instead of `TIME_FRAMES // 2` (50% overlap). Confirmed to remove audible pulsing artifact at chunk boundaries.
 - **Detection scoring**: `energy_ratio × (1 + CoV²)` instead of `(1 + CoV)`. Squared CoV amplifies the gap between specific and diffuse detections.
 - **Detection cutoff**: 0.65 × winner (was 0.40). Tighter relative threshold reduces FP rate.
+
+### Evaluation results (v2.2)
+
+| Metric | Value | vs v2.1 |
+|---|---|---|
+| Diagnose overall | **PASS** (HEALTHY) | — |
+| Diagnose mean out/in ratio | 0.753 | ≈ same |
+| SI-SDRi average | **-22.79 dB** | −0.61 dB (marginal regression) |
+| Detection mean F1 | **0.13** | ↓ from 0.21 |
+
+**Note:** SI-SDRi and F1 regression attributed to FSD50K contributing 0 clips (class balance unchanged from v2.1). The architectural changes (all-encoder FiLM, MRSL) had no measurable net effect when FSD50K was absent. Expect improvement in v2.3 once FSD50K loads correctly.
+
+**Listening tests:**
+- **Boundary pulsing**: FIXED — no rhythmic pulsing at 75% OLA overlap.
+- **Removal strength**: Too gentle at strength=1.0. Target sound persists at low level in background. Root cause: `negative_prob=0.30` over-trains the model to output near-zero masks, making the positive-class response too weak.
+- **Detection (urban sounds)**: Mostly correct — airplane/train/helicopter/washing_machine/engine/air_conditioner/jackhammer all detected correctly in a transport noise file. Wind not detected (likely below scoring cutoff).
+- **Detection (natural sounds)**: Unreliable — a cat+rain clip detected `keyboard_typing` and `mouse_click` instead of the actual content.
+- **Siren removal**: Siren audible at reduced level but not fully removed at full strength (same root cause as removal strength issue).
+
+---
+
+## v2.3 — Lower negative_prob to fix conservative mask outputs
+
+**File:** `separator_unet_film_multi_v2.3.h5`  
+**Trained:** — (pending, retrain from scratch)  
+**Status:** Not yet trained
+
+### Hyperparameters
+| Parameter | Value | Change from v2.2 |
+|---|---|---|
+| `base_filters` | 32 | — |
+| `batch_size` | 16 | — |
+| `epochs` | 60 | — |
+| `steps_per_epoch` | 500 | — |
+| `n_val` | 800 | — |
+| `learning_rate` | 1e-3 | — |
+| `patience` | 10 | — |
+| `negative_prob` | **0.15** | ↓ from 0.30 |
+| `bg_noise_prob` | 0.10 | — |
+| `bg_snr_db_range` | (15.0, 30.0) dB | — |
+
+### Dataset
+- ESC-50 + UrbanSound8K (~56 classes)
+- FSD50K (auto-detected; FSD50K loader bug is now fixed so clips will actually load)
+
+### Changes vs v2.2
+
+- **`negative_prob`: 0.30 → 0.15.** Root cause of v2.2's "removal too gentle" symptom: at 30% negatives the L1 loss substantially rewards outputting near-zero masks, pushing the model toward a conservative equilibrium. Halving the negative rate shifts the training gradient toward stronger positive-class responses, so the mask covers more of the target energy. 0.15 still provides enough negative examples to suppress false positives for absent classes (v2.0 collapsed at 0.45; v1.0 worked at 0.25; 0.15 is a deliberate step below the safe lower bound to maximise positive signal).
 
 ### How to train
 ```bash

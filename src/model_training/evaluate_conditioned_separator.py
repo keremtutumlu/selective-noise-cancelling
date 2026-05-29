@@ -23,6 +23,7 @@ Their difference, **SI-SDRi**, is the headline result.
 Run from the project root:
     python src/model_training/evaluate_conditioned_separator.py
 """
+import json
 import logging
 import sys
 from pathlib import Path
@@ -40,6 +41,23 @@ from conditioned_separator import (  # noqa: E402
 from separation_mixer import SeparationMixer  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
+def _load_model_classes(model_path: Path) -> list:
+    """Class list the model was trained with, from the sibling ``_classes.json``.
+
+    Defines the query-vector size and class -> index mapping. The model may
+    know more classes (e.g. FSD50K) than the locally-mounted datasets expose;
+    building the query off the local mixer instead crashes with a shape
+    mismatch (``expected (None, 235), found (16, 56)``).
+    """
+    classes_path = model_path.with_name(model_path.stem + "_classes.json")
+    if not classes_path.exists():
+        raise FileNotFoundError(
+            f"Model class list not found: {classes_path}. It is saved next to "
+            f"the .h5 at training time and is required to build the query vector."
+        )
+    return json.load(classes_path.open())
 
 
 def si_sdr(estimate: np.ndarray, reference: np.ndarray, eps: float = 1e-8) -> float:
@@ -96,23 +114,34 @@ class ConditionedSeparatorEvaluator:
         mixer = SeparationMixer(self.data_root, negative_prob=0.0, seed=self.seed)
         class_names = mixer.class_names
         model = tf.keras.models.load_model(self.model_path, compile=False)
+        # The one-hot query must span the model's full training vocabulary,
+        # not just the classes mounted locally at eval time.
+        model_classes = _load_model_classes(self.model_path)
+        print(f"Model vocabulary: {len(model_classes)} classes; "
+              f"{len(class_names)} have local audio for mixtures.\n")
 
         # Draw a fixed test set of (mixture, query, target stem) waveforms.
-        examples = [mixer._make_example() for _ in range(self.n_test)]
+        # Keep only examples whose query class exists in the model vocabulary
+        # (always true when the model knows >= the local classes; this guards
+        # the reverse case of evaluating an older, smaller-vocab checkpoint).
+        model_set = set(model_classes)
+        examples = [e for e in (mixer._make_example() for _ in range(self.n_test))
+                    if e[1] in model_set]
+        n = len(examples)
 
-        log_b = np.empty((self.n_test, FREQ_BINS, TIME_FRAMES, 1), dtype=np.float32)
+        log_b = np.empty((n, FREQ_BINS, TIME_FRAMES, 1), dtype=np.float32)
         lin_b = np.empty_like(log_b)
-        query_b = np.zeros((self.n_test, len(class_names)), dtype=np.float32)
+        query_b = np.zeros((n, len(model_classes)), dtype=np.float32)
         phases, frames = [], []
         for k, (mixture, target_cls, _) in enumerate(examples):
             phase, n_frames, lin_mag, log_mag = self._mixture_spectrogram(mixture)
             lin_b[k] = lin_mag
             log_b[k] = log_mag
-            query_b[k, class_names.index(target_cls)] = 1.0
+            query_b[k, model_classes.index(target_cls)] = 1.0
             phases.append(phase)
             frames.append(n_frames)
 
-        print(f"Running separation on {self.n_test} test mixtures...", end=" ", flush=True)
+        print(f"Running separation on {n} test mixtures...", end=" ", flush=True)
         est_mags = model.predict([log_b, query_b, lin_b], batch_size=16, verbose=0)
         print("done.\n")
 

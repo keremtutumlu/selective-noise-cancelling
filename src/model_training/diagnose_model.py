@@ -16,6 +16,7 @@ A healthy model passes all three; the broken v2.0 model fails on 1 and 3.
 Run from project root:
     python src/model_training/diagnose_model.py
 """
+import json
 import logging
 import sys
 from pathlib import Path
@@ -32,6 +33,24 @@ from conditioned_separator import (  # noqa: E402
 from separation_mixer import SeparationMixer, waveform_to_magnitude  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
+def _load_model_classes(model_path: Path) -> list:
+    """Class list the model was trained with, from the sibling ``_classes.json``.
+
+    This defines the query-vector size and the class -> index mapping, which
+    is **not** the same as the classes the locally-mounted datasets expose:
+    the model may know more classes (e.g. FSD50K) than are present at eval
+    time. Building the query off the local mixer instead crashes with a
+    shape mismatch (``expected (None, 235), found (1, 56)``).
+    """
+    classes_path = model_path.with_name(model_path.stem + "_classes.json")
+    if not classes_path.exists():
+        raise FileNotFoundError(
+            f"Model class list not found: {classes_path}. It is saved next to "
+            f"the .h5 at training time and is required to build the query vector."
+        )
+    return json.load(classes_path.open())
 
 
 def _query(class_names, name):
@@ -69,9 +88,18 @@ def diagnose(model_path: Path, data_root: Path, n_classes: int = 12,
     print(f"Data root    — {data_root}\n")
 
     model = tf.keras.models.load_model(model_path, compile=False)
+    model_classes = _load_model_classes(model_path)
     mixer = SeparationMixer(data_root, seed=seed)
-    class_names = mixer.class_names
-    test_classes = class_names[:n_classes]
+    # Query vocabulary = the classes the model was trained on (may exceed the
+    # locally-mounted datasets). Test only the classes we have local audio for.
+    model_set = set(model_classes)
+    available = [c for c in mixer.class_names if c in model_set]
+    if not available:
+        raise RuntimeError(
+            "No local classes overlap the model vocabulary — nothing to test.")
+    test_classes = available[:n_classes]
+    print(f"Model vocabulary: {len(model_classes)} classes; "
+          f"{len(available)} have local audio for testing.\n")
 
     # ---------- Test 1: output magnitude for a present class ----------
     print("Test 1 — Output magnitude on a known present class")
@@ -81,7 +109,7 @@ def diagnose(model_path: Path, data_root: Path, n_classes: int = 12,
     for cls in test_classes:
         clip = _clean_clip(mixer, cls)
         lin, log = _model_input(clip)
-        q = _query(class_names, cls)
+        q = _query(model_classes, cls)
         est = model.predict([log[None], q[None], lin[None]], verbose=0)
         inp_max, out_max = float(np.max(lin)), float(np.max(est))
         ratio = out_max / (inp_max + 1e-8)
@@ -100,7 +128,7 @@ def diagnose(model_path: Path, data_root: Path, n_classes: int = 12,
     lin, log = _model_input(clip)
     energies = {}
     for cls in test_classes[:6]:
-        q = _query(class_names, cls)
+        q = _query(model_classes, cls)
         est = model.predict([log[None], q[None], lin[None]], verbose=0)
         energies[cls] = float(np.mean(est ** 2))
     correct_e = energies[test_cls]
@@ -122,14 +150,14 @@ def diagnose(model_path: Path, data_root: Path, n_classes: int = 12,
     for cls in test_classes:
         clip = _clean_clip(mixer, cls)
         lin, log = _model_input(clip)
-        q = _query(class_names, cls)
+        q = _query(model_classes, cls)
         est = model.predict([log[None], q[None], lin[None]], verbose=0)
         correct_e = float(np.mean(est ** 2))
 
         wrong_classes = [c for c in test_classes if c != cls][:3]
         wrong_es = []
         for wc in wrong_classes:
-            qw = _query(class_names, wc)
+            qw = _query(model_classes, wc)
             estw = model.predict([log[None], qw[None], lin[None]], verbose=0)
             wrong_es.append(float(np.mean(estw ** 2)))
         wrong_avg = float(np.mean(wrong_es))

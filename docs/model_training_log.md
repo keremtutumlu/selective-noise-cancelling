@@ -207,8 +207,8 @@ Output is written to `saved_models/separation_models/separator_unet_film_multi_v
 ## v2.3 — Lower negative_prob to fix conservative mask outputs
 
 **File:** `separator_unet_film_multi_v2.3.h5`  
-**Trained:** — (pending, retrain from scratch)  
-**Status:** Not yet trained
+**Trained:** May 2026  
+**Status:** Trained — FSD50K over-eager FP problem identified; superseded by v2.4
 
 ### Hyperparameters
 | Parameter | Value | Change from v2.2 |
@@ -226,11 +226,47 @@ Output is written to `saved_models/separation_models/separator_unet_film_multi_v
 
 ### Dataset
 - ESC-50 + UrbanSound8K (~56 classes)
-- FSD50K (auto-detected; FSD50K loader bug is now fixed so clips will actually load)
+- FSD50K (~179 additional classes) — loaded correctly this run (single-label filter bug fixed in v2.2 post-train commit)
+- **Total model vocabulary: 235 classes**
 
 ### Changes vs v2.2
 
 - **`negative_prob`: 0.30 → 0.15.** Root cause of v2.2's "removal too gentle" symptom: at 30% negatives the L1 loss substantially rewards outputting near-zero masks, pushing the model toward a conservative equilibrium. Halving the negative rate shifts the training gradient toward stronger positive-class responses, so the mask covers more of the target energy. 0.15 still provides enough negative examples to suppress false positives for absent classes (v2.0 collapsed at 0.45; v1.0 worked at 0.25; 0.15 is a deliberate step below the safe lower bound to maximise positive signal).
+
+### Evaluation results (v2.3)
+
+| Metric | Value | vs v2.2 |
+|---|---|---|
+| Diagnose overall | **PASS** (HEALTHY) | — |
+| SI-SDRi average | **-21.49 dB** | +1.30 dB (marginal improvement) |
+| Detection mean F1 | **0.02** | ↓ from 0.13 |
+| Detection TP / FP / FN | 13 / 1092 / 475 | — |
+
+**Detection collapse root cause — FSD50K over-eager false positives:**
+
+The 179 FSD50K-only classes (no ESC-50/UrbanSound8K audio locally) cannot appear in ground-truth mixtures, so they can only produce false positives. Many fire on all audio regardless of content:
+
+| Class | FPs | Note |
+|---|---|---|
+| purr | 43 | FSD50K only |
+| bass_guitar | 42 | FSD50K only |
+| ringtone | 40 | FSD50K only |
+| telephone | 32 | FSD50K only |
+| thunderstorm | 29 | — |
+| boom | 27 | FSD50K only |
+| animal | 26 | FSD50K only |
+| bass_drum | 24 | FSD50K only |
+| thunder | 24 | FSD50K only |
+| rooster | 22 | — |
+
+The F1 collapse from 0.13 (v2.2, 56-class vocab) to 0.02 is entirely explained by these systematically over-eager FSD50K classes. This is the "bass_guitar appears in every file" observation from manual listening tests.
+
+**SI-SDRi detail:** Marginal +1.30 dB improvement, but all classes still negative. The lower `negative_prob` did not produce the expected mask strength improvement at the separation metric level.
+
+**Key lessons for v2.4:**
+1. Simply adding FSD50K without class-balancing the training gradient created a large set of systematically firing FP classes.
+2. FSD50K clips need proper negative examples during training — the model must see FSD50K classes mixed into ESC-50/UrbanSound8K audio with a zero target, so it learns *not* to fire on unrelated audio.
+3. Alternatively, detection can be restricted to a "trusted" class subset, or per-class FP calibration thresholds can be applied.
 
 ### How to train
 ```bash

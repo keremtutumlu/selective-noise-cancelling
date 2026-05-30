@@ -62,6 +62,7 @@ class SeparationMixer:
         negative_prob: float = 0.15,
         bg_noise_prob: float = 0.10,
         bg_snr_db_range: Tuple[float, float] = (15.0, 30.0),
+        min_clips_per_class: int = 40,
         seed: int = 42,
     ):
         self.target_sr = target_sr
@@ -71,13 +72,16 @@ class SeparationMixer:
         self.negative_prob = negative_prob
         self.bg_noise_prob = bg_noise_prob
         self.bg_snr_db_range = bg_snr_db_range
+        self.min_clips_per_class = min_clips_per_class
 
         self._rng = random.Random(seed)
         self._np_rng = np.random.default_rng(seed)
 
         # Merge every dataset found under data_root into one clip cache.
+        # Under-supported classes (the FSD50K long tail) are pruned by
+        # min_clips_per_class inside load_all_datasets.
         self._waveform_cache: Dict[str, List[np.ndarray]] = load_all_datasets(
-            data_root, target_sr)
+            data_root, target_sr, self.min_clips_per_class)
         self.class_names: List[str] = sorted(self._waveform_cache)
         self.num_classes = len(self.class_names)
         logging.info(f"SeparationMixer ready: {self.num_classes} classes.")

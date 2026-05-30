@@ -11,9 +11,13 @@ Supported datasets:
     * ESC-50         — 50 environmental classes (one zip from GitHub).
     * UrbanSound8K   — 10 urban classes; 4 of them merge into ESC-50
                        classes via ``CLASS_ALIASES``, 6 are new.
+    * FSD50K         — ~200 AudioSet-labelled classes; duplicates merge
+                       into ESC-50 via ``CLASS_ALIASES``. Under-supported
+                       leaf classes are pruned by ``min_clips_per_class``
+                       in ``load_all_datasets``.
 
-To add another dataset (e.g. FSD50K), write a ``load_<name>`` function
-that returns the same dict shape and call it from ``load_all_datasets``.
+To add another dataset, write a ``load_<name>`` function that returns the
+same dict shape and call it from ``load_all_datasets``.
 """
 import logging
 import re
@@ -139,7 +143,8 @@ def load_fsd50k(root_dir: Path, target_sr: int = 16000,
     return cache
 
 
-def load_all_datasets(data_root: Path, target_sr: int = 16000) -> Dict[str, List[np.ndarray]]:
+def load_all_datasets(data_root: Path, target_sr: int = 16000,
+                      min_clips_per_class: int = 40) -> Dict[str, List[np.ndarray]]:
     """
     Merge every dataset found under ``data_root`` into one class->clips dict.
 
@@ -147,6 +152,16 @@ def load_all_datasets(data_root: Path, target_sr: int = 16000) -> Dict[str, List
         ``data_root/archive/esc50.csv``                         -> ESC-50
         ``data_root/urbansound8k/metadata/UrbanSound8K.csv``    -> UrbanSound8K
         ``data_root/fsd50k/FSD50K.ground_truth/dev.csv``        -> FSD50K
+
+    ``min_clips_per_class`` drops any class left with fewer than that many
+    clips **after merging**. FSD50K's AudioSet leaf labels have a long tail
+    of classes backed by only a handful of clips; a class learned from so
+    few examples produces a diffuse, non-discriminative mask that fires on
+    unrelated audio (the v2.3 false-positive problem — e.g. ``purr``,
+    ``boom``, ``bass_guitar``). Pruning happens post-merge so cross-dataset
+    aliases pool first (FSD50K ``bark`` clips count toward ESC-50 ``dog``)
+    and the well-supported ESC-50/UrbanSound8K classes — all far above the
+    floor — are never affected.
     """
     merged: Dict[str, List[np.ndarray]] = {}
 
@@ -170,6 +185,21 @@ def load_all_datasets(data_root: Path, target_sr: int = 16000) -> Dict[str, List
             f"No datasets found under {data_root}. Expected ESC-50 at 'archive/' "
             f"and/or UrbanSound8K at 'urbansound8k/'."
         )
+
+    if min_clips_per_class > 1:
+        dropped = sorted(c for c, v in merged.items()
+                         if len(v) < min_clips_per_class)
+        for cls in dropped:
+            del merged[cls]
+        if dropped:
+            logging.info(f"Pruned {len(dropped)} class(es) under "
+                         f"{min_clips_per_class} clips: {dropped}")
+        if not merged:
+            raise ValueError(
+                f"min_clips_per_class={min_clips_per_class} pruned every class. "
+                f"Lower the floor or add more data."
+            )
+
     logging.info(f"Merged: {len(merged)} classes, "
                  f"{sum(len(v) for v in merged.values())} clips total.")
     return merged

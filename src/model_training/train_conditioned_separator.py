@@ -22,8 +22,8 @@ a multi-resolution L1 (full + half + quarter resolution) between the
 estimated and the true target-stem magnitude.
 
 Output:
-    saved_models/separation_models/separator_unet_film_multi_v2.3.h5
-    saved_models/separation_models/separator_unet_film_multi_v2.3_classes.json
+    saved_models/separation_models/separator_unet_film_multi_v2.4.h5
+    saved_models/separation_models/separator_unet_film_multi_v2.4_classes.json
 """
 import json
 import logging
@@ -69,7 +69,7 @@ class ConditionedSeparatorTrainer:
         self,
         data_root: Path,
         model_save_dir: Path,
-        model_version: str = "v2.3",
+        model_version: str = "v2.4",
         base_filters: int = 32,
         batch_size: int = 16,
         epochs: int = 60,
@@ -83,6 +83,7 @@ class ConditionedSeparatorTrainer:
         bg_noise_prob: float = 0.10,
         bg_snr_db_range: Tuple[float, float] = (15.0, 30.0),
         max_mix: int = 4,
+        min_clips_per_class: int = 40,
     ):
         self.data_root = data_root
         self.model_save_dir = model_save_dir
@@ -99,6 +100,7 @@ class ConditionedSeparatorTrainer:
         self.bg_noise_prob = bg_noise_prob
         self.bg_snr_db_range = bg_snr_db_range
         self.max_mix = max_mix
+        self.min_clips_per_class = min_clips_per_class
 
         self.model_save_dir.mkdir(parents=True, exist_ok=True)
         stem = f"separator_unet_film_multi_{model_version}"
@@ -114,6 +116,7 @@ class ConditionedSeparatorTrainer:
             negative_prob=self.negative_prob,
             bg_noise_prob=self.bg_noise_prob,
             bg_snr_db_range=self.bg_snr_db_range,
+            min_clips_per_class=self.min_clips_per_class,
             seed=self.seed + seed_offset,
         )
 

@@ -275,6 +275,44 @@ python src/model_training/train_conditioned_separator.py
 
 ---
 
+## v2.4 — Minimum clip-count floor to prune the FSD50K false-positive tail
+
+**File:** `separator_unet_film_multi_v2.4.h5`  
+**Trained:** — (pending Colab run)  
+**Status:** Not yet trained
+
+### Hyperparameters
+| Parameter | Value | Change from v2.3 |
+|---|---|---|
+| `base_filters` | 32 | — |
+| `batch_size` | 16 | — |
+| `epochs` | 60 | — |
+| `steps_per_epoch` | 500 | — |
+| `n_val` | 800 | — |
+| `learning_rate` | 1e-3 | — |
+| `patience` | 10 | — |
+| `negative_prob` | 0.15 | — |
+| `bg_noise_prob` | 0.10 | — |
+| `bg_snr_db_range` | (15.0, 30.0) dB | — |
+| `min_clips_per_class` | **40** | **new** |
+
+### Dataset
+- ESC-50 + UrbanSound8K + FSD50K, **with a post-merge minimum clip-count floor of 40 clips/class.**
+- The floor prunes the FSD50K long tail. ESC-50 (40 clips/class) and UrbanSound8K (hundreds/class) are unaffected; the final class count will be ESC-50/UrbanSound8K plus only the FSD50K classes that clear 40 clips after aliasing.
+
+### Changes vs v2.3
+
+- **New `min_clips_per_class=40` floor in `load_all_datasets`.** v2.3's detection collapse (F1 0.02) was driven by FSD50K leaf classes (`purr`, `bass_guitar`, `ringtone`, `boom`...) firing as systematic false positives. Root cause: many FSD50K leaf labels are backed by only a handful of clips, and a class learned from so few (noisy, multi-label) examples produces a diffuse, non-discriminative mask that scores spuriously high on unrelated audio. The same ~5.6:1 positive:negative ratio applies to ESC-50 classes — which do **not** over-fire — so the discriminator is per-class data volume/quality, not the negative rate or cross-dataset mixing (mixtures were already cross-dataset, and ~76% of v2.3's negatives already targeted FSD50K classes).
+- The floor is applied **post-merge**, so cross-dataset aliases pool first (FSD50K `bark` clips count toward ESC-50 `dog`) and only genuinely under-supported, FSD50K-only labels are dropped.
+- **Single-variable change** (clean attribution). If false positives persist after v2.4, v2.5 adds hard cross-dataset negatives (class-balanced absent-class queries) as the reinforcing fix. The floor value (40) is tunable on the v2.5 side if needed.
+
+### How to train
+```bash
+python src/model_training/train_conditioned_separator.py
+```
+
+---
+
 ## How to add a new entry
 
 After each training run, append a new `## v<X.Y>` section with:

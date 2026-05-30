@@ -166,7 +166,7 @@ def main():
                         help="Removal strength in [0, 1] (default: 1.0)")
     parser.add_argument("--model", type=Path,
                         default=BASE_DIR / "saved_models" / "separation_models"
-                                / "separator_unet_film_multi_v2.3.h5")
+                                / "separator_unet_film_multi_v2.4.h5")
     args = parser.parse_args()
 
     classes_path = args.model.with_name(args.model.stem + "_classes.json")

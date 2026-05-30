@@ -186,5 +186,5 @@ class ConditionedSeparatorEvaluator:
 if __name__ == "__main__":
     ConditionedSeparatorEvaluator(
         data_root=BASE_DIR / "data" / "raw",
-        model_path=BASE_DIR / "saved_models" / "separation_models" / "separator_unet_film_multi_v2.3.h5",
+        model_path=BASE_DIR / "saved_models" / "separation_models" / "separator_unet_film_multi_v2.4.h5",
     ).evaluate()

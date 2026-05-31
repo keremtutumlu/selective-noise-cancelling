@@ -26,6 +26,7 @@ import tensorflow as tf
 
 BASE_DIR = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(BASE_DIR / "src" / "model_training"))
+import model_config as cfg  # noqa: E402
 from conditioned_separator import (  # noqa: E402
     FREQ_BINS, HOP_LENGTH, N_FFT, SAMPLE_RATE, TIME_FRAMES,
 )
@@ -164,18 +165,21 @@ def main():
                         help="Class names to remove. If omitted, only runs detection.")
     parser.add_argument("--strength", type=float, default=1.0,
                         help="Removal strength in [0, 1] (default: 1.0)")
-    parser.add_argument("--model", type=Path,
-                        default=BASE_DIR / "saved_models" / "separation_models"
-                                / "separator_unet_film_multi_v2.4.h5")
+    parser.add_argument("--model", type=Path, default=None,
+                        help="Explicit path to a .h5 checkpoint. Overrides --version.")
+    parser.add_argument("--version", default=None,
+                        help=f"Model version, e.g. v2.5. Overrides the {cfg.ENV_VAR} "
+                             f"env var. Default: {cfg.model_version()}.")
     args = parser.parse_args()
 
-    classes_path = args.model.with_name(args.model.stem + "_classes.json")
+    model_file = args.model or cfg.model_path(args.version)
+    classes_path = model_file.with_name(model_file.stem + "_classes.json")
     class_names = json.load(classes_path.open())
-    print(f"\nModel: {args.model}")
+    print(f"\nModel: {model_file}")
     print(f"Audio: {args.audio_path}")
     print(f"Classes available: {len(class_names)}")
 
-    model = tf.keras.models.load_model(args.model, compile=False)
+    model = tf.keras.models.load_model(model_file, compile=False)
     audio = _load_audio(args.audio_path)
     print(f"Loaded {len(audio) / SAMPLE_RATE:.1f} seconds of audio")
 

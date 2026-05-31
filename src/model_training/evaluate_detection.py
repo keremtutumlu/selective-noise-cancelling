@@ -22,6 +22,7 @@ import tensorflow as tf
 BASE_DIR = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(BASE_DIR / "src" / "data_preparation"))
 sys.path.insert(0, str(BASE_DIR / "src" / "model_training"))
+import model_config as cfg  # noqa: E402
 from conditioned_separator import (  # noqa: E402
     FREQ_BINS, HOP_LENGTH, N_FFT, TIME_FRAMES,
 )
@@ -188,8 +189,16 @@ def evaluate(model_path: Path, data_root: Path, n_test: int = 200,
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Evaluate detection precision/recall/F1.")
+    parser.add_argument(
+        "--version", default=None,
+        help=f"Model version, e.g. v2.5. Overrides the {cfg.ENV_VAR} env var. "
+             f"Default: {cfg.model_version()}.")
+    args = parser.parse_args()
+
     evaluate(
-        model_path=BASE_DIR / "saved_models" / "separation_models"
-                            / "separator_unet_film_multi_v2.4.h5",
-        data_root=BASE_DIR / "data" / "raw",
+        model_path=cfg.model_path(args.version),
+        data_root=cfg.DATA_ROOT,
     )

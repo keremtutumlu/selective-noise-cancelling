@@ -21,15 +21,15 @@ The mask is applied to the linear magnitude with a plain Multiply layer
 a multi-resolution L1 (full + half + quarter resolution) between the
 estimated and the true target-stem magnitude.
 
-Output:
-    saved_models/separation_models/separator_unet_film_multi_v2.4.h5
-    saved_models/separation_models/separator_unet_film_multi_v2.4_classes.json
+Output (version comes from model_config — SNC_MODEL_VERSION env var or default):
+    saved_models/separation_models/separator_unet_film_multi_<version>.h5
+    saved_models/separation_models/separator_unet_film_multi_<version>_classes.json
 """
 import json
 import logging
 import sys
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 import tensorflow as tf
@@ -40,6 +40,7 @@ from tensorflow.keras.layers import Input, Multiply
 BASE_DIR = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(BASE_DIR / "src" / "data_preparation"))
 sys.path.insert(0, str(BASE_DIR / "src" / "model_training"))
+import model_config as cfg  # noqa: E402
 from conditioned_separator import (  # noqa: E402
     FREQ_BINS, TIME_FRAMES, build_conditioned_separator,
 )
@@ -69,7 +70,7 @@ class ConditionedSeparatorTrainer:
         self,
         data_root: Path,
         model_save_dir: Path,
-        model_version: str = "v2.4",
+        model_version: Optional[str] = None,
         base_filters: int = 32,
         batch_size: int = 16,
         epochs: int = 60,
@@ -87,7 +88,7 @@ class ConditionedSeparatorTrainer:
     ):
         self.data_root = data_root
         self.model_save_dir = model_save_dir
-        self.model_version = model_version
+        self.model_version = model_version or cfg.model_version()
         self.base_filters = base_filters
         self.batch_size = batch_size
         self.epochs = epochs
@@ -103,7 +104,7 @@ class ConditionedSeparatorTrainer:
         self.min_clips_per_class = min_clips_per_class
 
         self.model_save_dir.mkdir(parents=True, exist_ok=True)
-        stem = f"separator_unet_film_multi_{model_version}"
+        stem = cfg.model_stem(self.model_version)
         self.checkpoint_path = self.model_save_dir / f"{stem}.h5"
         self.classes_path = self.model_save_dir / f"{stem}_classes.json"
 
@@ -211,7 +212,17 @@ class ConditionedSeparatorTrainer:
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Train the conditioned separator.")
+    parser.add_argument(
+        "--version", default=None,
+        help=f"Model version tag, e.g. v2.5. Overrides the {cfg.ENV_VAR} env var. "
+             f"Default: {cfg.model_version()}.")
+    args = parser.parse_args()
+
     ConditionedSeparatorTrainer(
-        data_root=BASE_DIR / "data" / "raw",
-        model_save_dir=BASE_DIR / "saved_models" / "separation_models",
+        data_root=cfg.DATA_ROOT,
+        model_save_dir=cfg.MODELS_DIR,
+        model_version=args.version,
     ).train()

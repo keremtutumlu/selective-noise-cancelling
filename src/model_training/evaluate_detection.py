@@ -62,12 +62,18 @@ def _spectrogram(waveform):
     return mag
 
 
-def detect_classes(model, class_names, mixture):
+def detect_classes(model, class_names, mixture, allowed=None):
     """Webapp-equivalent detection: peak-normalise, score every class, threshold.
 
     Every class query for one mixture is run in a single batched predict (the
     one-hot rows of an identity matrix) rather than one predict per class, so
     scoring a full 200+-class vocabulary stays fast.
+
+    ``allowed`` optionally restricts which classes can be *surfaced*. Scoring
+    still runs over the full vocabulary (query indices are unchanged), but
+    ranking and the cutoff are computed over the allowed subset only, so a
+    class the local data cannot validate can never win the mixture or push the
+    relative cutoff up. ``None`` = no restriction.
     """
     peak = np.max(np.abs(mixture))
     if peak > 1e-6:
@@ -90,15 +96,24 @@ def detect_classes(model, class_names, mixture):
         specificity = float(np.std(e) / (np.mean(e) + 1e-8))
         scores[name] = energy_ratio * (1.0 + specificity ** 2)
 
-    ranked = sorted(scores, key=scores.get, reverse=True)
+    allowed_set = set(class_names) if allowed is None else set(allowed)
+    ranked = [n for n in sorted(scores, key=scores.get, reverse=True)
+              if n in allowed_set]
+    if not ranked:
+        return set(), scores
     cutoff = max(ABSOLUTE_FLOOR, RELATIVE_CAP * scores[ranked[0]])
     detected = [n for n in ranked if scores[n] >= cutoff][:10]
     return set(detected), scores
 
 
 def evaluate(model_path: Path, data_root: Path, n_test: int = 200,
-             seed: int = 7777) -> dict:
-    """Run the detection sweep and return a metric dict alongside the printout."""
+             seed: int = 7777, allowed=None) -> dict:
+    """Run the detection sweep and return a metric dict alongside the printout.
+
+    ``allowed`` is an optional list of class names detection may surface; when
+    given, ranking and cutoff are computed over that subset only (see
+    ``detect_classes``). ``None`` evaluates over the full model vocabulary.
+    """
     print(f"\nDetection Evaluation — {model_path.name}")
     print(f"Test mixtures: {n_test}\n")
 
@@ -116,7 +131,13 @@ def evaluate(model_path: Path, data_root: Path, n_test: int = 200,
         raise RuntimeError(
             "No local classes overlap the model vocabulary — nothing to test.")
     print(f"Model vocabulary: {len(model_classes)} classes; "
-          f"{len(available)} have local audio for mixtures.\n")
+          f"{len(available)} have local audio for mixtures.")
+    if allowed is None:
+        print("Detection allow-list: none (scoring over full vocabulary).\n")
+    else:
+        allowed = [c for c in allowed if c in model_set]
+        print(f"Detection allow-list: {len(allowed)} classes "
+              f"(only these can be surfaced).\n")
 
     tp = defaultdict(int)
     fp = defaultdict(int)
@@ -135,7 +156,7 @@ def evaluate(model_path: Path, data_root: Path, n_test: int = 200,
             mixture += window
         mixture = mixer._maybe_add_background_noise(mixture)
 
-        detected, _ = detect_classes(model, model_classes, mixture)
+        detected, _ = detect_classes(model, model_classes, mixture, allowed)
 
         for cls in present:
             n_present[cls] += 1
@@ -188,6 +209,18 @@ def evaluate(model_path: Path, data_root: Path, n_test: int = 200,
     }
 
 
+def _local_classes(data_root: Path, model_classes: list) -> list:
+    """Classes the local datasets can actually validate (model vocab ∩ local audio).
+
+    This is the natural allow-list: detection should only surface classes we
+    have ground-truth audio for, so classes that exist only in the model's
+    vocabulary (e.g. FSD50K-only labels) cannot become false positives.
+    """
+    mixer = SeparationMixer(data_root, negative_prob=0.0, seed=0)
+    model_set = set(model_classes)
+    return [c for c in mixer.class_names if c in model_set]
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -196,9 +229,39 @@ if __name__ == "__main__":
         "--version", default=None,
         help=f"Model version, e.g. v2.5. Overrides the {cfg.ENV_VAR} env var. "
              f"Default: {cfg.model_version()}.")
+    parser.add_argument(
+        "--allowlist", choices=["auto", "file", "off"], default="auto",
+        help="Detection allow-list mode. 'auto' (default): use the sibling "
+             "allow-list file if it exists, else evaluate the full vocabulary. "
+             "'file': require the allow-list file. 'off': force full vocabulary.")
+    parser.add_argument(
+        "--write-allowlist", action="store_true",
+        help="Write an allow-list of locally-validatable classes next to the "
+             "checkpoint, then evaluate with it. This is the free no-retrain "
+             "fix for the FSD50K false-positive problem.")
     args = parser.parse_args()
 
+    model_path = cfg.model_path(args.version)
+
+    if args.write_allowlist:
+        local = _local_classes(cfg.DATA_ROOT, _load_model_classes(model_path))
+        out = cfg.detect_allowlist_path(args.version)
+        json.dump(sorted(local), out.open("w"), indent=2)
+        print(f"Wrote {len(local)}-class detection allow-list to {out}")
+
+    if args.allowlist == "off":
+        allowed = None
+    elif args.allowlist == "file":
+        allowed = cfg.load_detect_allowlist(args.version)
+        if allowed is None:
+            raise FileNotFoundError(
+                f"No allow-list at {cfg.detect_allowlist_path(args.version)}. "
+                f"Create one with --write-allowlist or use --allowlist auto/off.")
+    else:  # auto
+        allowed = cfg.load_detect_allowlist(args.version)
+
     evaluate(
-        model_path=cfg.model_path(args.version),
+        model_path=model_path,
         data_root=cfg.DATA_ROOT,
+        allowed=allowed,
     )

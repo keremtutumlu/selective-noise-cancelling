@@ -30,9 +30,10 @@ Every helper reads the version lazily, so setting the env var after import still
 takes effect. A ``--version`` CLI flag on each script overrides the env var for
 one-off runs (e.g. comparing v2.3 against v2.4 without re-exporting).
 """
+import json
 import os
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 # Repo root: this file lives at src/model_training/model_config.py
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -70,3 +71,37 @@ def model_path(version: Optional[str] = None) -> Path:
 def classes_path(version: Optional[str] = None) -> Path:
     """Path to the sibling ``_classes.json`` for the active (or given) version."""
     return MODELS_DIR / f"{model_stem(version)}_classes.json"
+
+
+def detect_allowlist_path(version: Optional[str] = None) -> Path:
+    """Path to the optional detection allow-list for the active (or given) version.
+
+    Sits next to the checkpoint as ``..._detect_allowlist.json`` and, when
+    present, holds a JSON list of class names that detection is permitted to
+    surface. The model still *knows* its full vocabulary (so any class can be
+    queried for removal), but detection ranking/cutoff is computed over the
+    allow-list only — keeping classes the local datasets cannot validate
+    (e.g. FSD50K-only ``ringtone``, ``telephone``) out of the candidate pool
+    so they can never become false positives.
+    """
+    return MODELS_DIR / f"{model_stem(version)}_detect_allowlist.json"
+
+
+def load_detect_allowlist(version: Optional[str] = None) -> Optional[List[str]]:
+    """Detection allow-list for a version, or ``None`` if no file exists.
+
+    ``None`` means "no restriction" — detection falls back to the model's full
+    class vocabulary, the pre-allow-list behaviour. An empty or malformed file
+    is treated the same as missing, so a bad file never silently hides every
+    class.
+    """
+    path = detect_allowlist_path(version)
+    if not path.exists():
+        return None
+    try:
+        names = json.load(path.open())
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(names, list) or not names:
+        return None
+    return [str(n) for n in names]

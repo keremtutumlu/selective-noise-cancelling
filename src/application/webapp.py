@@ -31,6 +31,7 @@ import tensorflow as tf
 
 BASE_DIR = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(BASE_DIR / "src" / "model_training"))
+import model_config as cfg  # noqa: E402
 from conditioned_separator import (  # noqa: E402
     FREQ_BINS, HOP_LENGTH, N_FFT, SAMPLE_RATE, TIME_FRAMES,
 )
@@ -41,7 +42,28 @@ _VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 # In-process model cache. Loading a Keras .h5 is slow (~5-10 s on T4) so we
 # cache each model the first time the user selects it from the dropdown.
 _loaded: dict = {}
-_current: dict = {"name": None, "model": None, "class_names": None}
+_current: dict = {"name": None, "model": None, "class_names": None,
+                  "allowed": None}
+
+
+def _load_allowlist(name: str):
+    """Detection allow-list sitting next to checkpoint ``name``, or ``None``.
+
+    Same contract as model_config.load_detect_allowlist but keyed off the
+    checkpoint stem the dropdown uses (e.g. ``separator_unet_film_multi_v2.4``)
+    rather than a bare version. When present, detection only surfaces these
+    classes; removal can still target any class in the model vocabulary.
+    """
+    path = _MODELS_DIR / f"{name}_detect_allowlist.json"
+    if not path.exists():
+        return None
+    try:
+        names = json.load(path.open())
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(names, list) or not names:
+        return None
+    return [str(n) for n in names]
 
 
 def _available_models() -> list[tuple[str, Path]]:
@@ -63,9 +85,13 @@ def _load_model(name: str) -> None:
     classes = _MODELS_DIR / f"{name}_classes.json"
     model = tf.keras.models.load_model(h5, compile=False)
     class_names = json.load(classes.open())
-    _loaded[name] = {"model": model, "class_names": class_names}
-    _current.update(name=name, model=model, class_names=class_names)
-    print(f"Loaded model '{name}' ({len(class_names)} classes).")
+    allowed = _load_allowlist(name)
+    _loaded[name] = {"model": model, "class_names": class_names,
+                     "allowed": allowed}
+    _current.update(name=name, model=model, class_names=class_names,
+                    allowed=allowed)
+    extra = "" if allowed is None else f", detection limited to {len(allowed)}"
+    print(f"Loaded model '{name}' ({len(class_names)} classes{extra}).")
 
 
 # Pre-load the most recently modified model so first detection is fast.
@@ -155,7 +181,18 @@ def detect_sounds(file_path):
         specificity = float(np.std(est) / (np.mean(est) + 1e-8))
         scores[name] = energy_ratio * (1.0 + specificity ** 2)
 
-    ranked = sorted(scores, key=scores.get, reverse=True)
+    # If the model ships a detection allow-list, rank and threshold over that
+    # subset only. Scoring above still runs over the full vocabulary (query
+    # indices unchanged), but classes the local data cannot validate (e.g.
+    # FSD50K-only ringtone/telephone) are kept out of the candidate pool so
+    # they can neither win the mixture nor inflate the relative cutoff.
+    allowed = _current.get("allowed")
+    allowed_set = set(scores) if allowed is None else set(allowed)
+    ranked = [n for n in sorted(scores, key=scores.get, reverse=True)
+              if n in allowed_set]
+    if not ranked:
+        return ([gr.update(choices=[], value=[]),
+                 (SAMPLE_RATE, audio), None, None] + cleared)
     # Relative cap at 0.65 of the winner (tighter than the old 0.40) to
     # reduce false positives; absolute floor keeps very quiet but real
     # classes reachable.

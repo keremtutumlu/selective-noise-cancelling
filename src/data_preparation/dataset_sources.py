@@ -20,9 +20,11 @@ To add another dataset, write a ``load_<name>`` function that returns the
 same dict shape and call it from ``load_all_datasets``.
 """
 import logging
+import os
+import pickle
 import re
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import librosa
 import numpy as np
@@ -143,8 +145,31 @@ def load_fsd50k(root_dir: Path, target_sr: int = 16000,
     return cache
 
 
+# Bumping this invalidates every on-disk cache (use when the decode/merge
+# logic changes in a way that alters the cached waveforms).
+_CACHE_VERSION = 1
+
+
+def _cache_file(data_root: Path, target_sr: int, min_clips_per_class: int) -> Path:
+    """Per-config cache path. Any parameter that changes the merged result is
+    encoded in the filename so a different config never reads a stale cache.
+
+    Defaults to ``data_root`` but honours ``SNC_DATA_CACHE_DIR`` — on Colab the
+    data root is a Drive symlink, and writing/reading the cache there is exactly
+    the slow tiny-file I/O we are trying to avoid. Point this at local SSD
+    (e.g. ``/content``) so the cache itself is fast.
+    """
+    cache_dir = Path(os.environ.get("SNC_DATA_CACHE_DIR", str(data_root)))
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return (cache_dir / f"_decoded_cache_v{_CACHE_VERSION}"
+            f"_sr{target_sr}_min{min_clips_per_class}.pkl")
+
+
 def load_all_datasets(data_root: Path, target_sr: int = 16000,
-                      min_clips_per_class: int = 40) -> Dict[str, List[np.ndarray]]:
+                      min_clips_per_class: int = 40,
+                      cache: bool = True,
+                      cache_path: Optional[Path] = None,
+                      ) -> Dict[str, List[np.ndarray]]:
     """
     Merge every dataset found under ``data_root`` into one class->clips dict.
 
@@ -162,7 +187,33 @@ def load_all_datasets(data_root: Path, target_sr: int = 16000,
     aliases pool first (FSD50K ``bark`` clips count toward ESC-50 ``dog``)
     and the well-supported ESC-50/UrbanSound8K classes — all far above the
     floor — are never affected.
+
+    ``cache`` (default True): decoding ~10k+ small WAVs with ``librosa.load``
+    is the slowest step by far, and on a Drive-backed data root reading
+    thousands of tiny files cold can take *over an hour* — repeated once per
+    evaluation script. With caching on, the fully decoded+merged result is
+    pickled once to ``cache_path`` (default: a per-config file under
+    ``data_root``); every later call reads that single file in seconds.
+    Set ``SNC_DISABLE_DATA_CACHE=1`` or ``cache=False`` to force a fresh
+    decode. Delete the ``_decoded_cache_*.pkl`` file to rebuild it.
     """
+    if os.environ.get("SNC_DISABLE_DATA_CACHE") == "1":
+        cache = False
+    cache_path = cache_path or _cache_file(data_root, target_sr, min_clips_per_class)
+
+    if cache and cache_path.exists():
+        try:
+            with cache_path.open("rb") as f:
+                merged = pickle.load(f)
+            logging.info(
+                f"Loaded decoded dataset from cache: {cache_path.name} "
+                f"({len(merged)} classes, "
+                f"{sum(len(v) for v in merged.values())} clips).")
+            return merged
+        except (pickle.UnpicklingError, EOFError, OSError) as exc:
+            logging.warning(f"Cache {cache_path.name} unreadable ({exc}); "
+                            f"re-decoding from source audio.")
+
     merged: Dict[str, List[np.ndarray]] = {}
 
     esc50_dir = data_root / "archive"
@@ -202,4 +253,18 @@ def load_all_datasets(data_root: Path, target_sr: int = 16000,
 
     logging.info(f"Merged: {len(merged)} classes, "
                  f"{sum(len(v) for v in merged.values())} clips total.")
+
+    if cache:
+        # Write atomically (temp file + replace) so an interrupted write never
+        # leaves a half-written cache that later loads as garbage.
+        try:
+            tmp = cache_path.with_suffix(cache_path.suffix + ".tmp")
+            with tmp.open("wb") as f:
+                pickle.dump(merged, f, protocol=pickle.HIGHEST_PROTOCOL)
+            os.replace(tmp, cache_path)
+            logging.info(f"Cached decoded dataset to {cache_path.name} "
+                         f"(delete to rebuild).")
+        except OSError as exc:
+            logging.warning(f"Could not write dataset cache: {exc}")
+
     return merged

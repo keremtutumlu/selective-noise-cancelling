@@ -22,7 +22,7 @@ The generator yields data already shaped for the conditioned U-Net:
 import logging
 import random
 from pathlib import Path
-from typing import Dict, Iterator, List, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 import librosa
 import numpy as np
@@ -63,6 +63,8 @@ class SeparationMixer:
         bg_noise_prob: float = 0.10,
         bg_snr_db_range: Tuple[float, float] = (15.0, 30.0),
         min_clips_per_class: int = 40,
+        over_firing_classes: Optional[List[str]] = None,
+        over_firing_weight: float = 3.0,
         seed: int = 42,
     ):
         self.target_sr = target_sr
@@ -84,6 +86,25 @@ class SeparationMixer:
             data_root, target_sr, self.min_clips_per_class)
         self.class_names: List[str] = sorted(self._waveform_cache)
         self.num_classes = len(self.class_names)
+
+        # Build a per-class weight vector for negative-example class selection.
+        # over_firing_classes get over_firing_weight; all others get 1.0.
+        # This forces the model to see more hard negatives for classes that
+        # produce diffuse false-positive masks (e.g. siren, thunderstorm).
+        self._neg_weights = np.ones(self.num_classes, dtype=np.float64)
+        if over_firing_classes:
+            cls_idx = {c: i for i, c in enumerate(self.class_names)}
+            hit = 0
+            for cls in over_firing_classes:
+                if cls in cls_idx:
+                    self._neg_weights[cls_idx[cls]] = over_firing_weight
+                    hit += 1
+            logging.info(
+                f"SeparationMixer: weighted hard-negative for "
+                f"{hit}/{len(over_firing_classes)} over-firing classes "
+                f"(weight={over_firing_weight}).")
+        self._neg_weights /= self._neg_weights.sum()
+
         logging.info(f"SeparationMixer ready: {self.num_classes} classes.")
 
     def _random_window(self, waveform: np.ndarray) -> np.ndarray:
@@ -145,9 +166,15 @@ class SeparationMixer:
                 windows[cls] = windows[cls] / peak
 
         # Negative example: query an absent class -> the target is silence.
-        absent = [c for c in self.class_names if c not in present]
-        if absent and self._rng.random() < self.negative_prob:
-            target_cls = self._rng.choice(absent)
+        # Class selection is weighted: over_firing_classes are sampled more
+        # often so the model learns hard suppression for them.
+        present_set = set(present)
+        absent_indices = [i for i, c in enumerate(self.class_names) if c not in present_set]
+        if absent_indices and self._rng.random() < self.negative_prob:
+            w = self._neg_weights[absent_indices]
+            w = w / w.sum()
+            idx = self._np_rng.choice(absent_indices, p=w)
+            target_cls = self.class_names[idx]
             target_stem = np.zeros(self.window_length, dtype=np.float32)
         else:
             target_cls = self._rng.choice(present)

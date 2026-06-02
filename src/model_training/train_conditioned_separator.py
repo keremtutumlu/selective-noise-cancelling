@@ -29,7 +29,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import tensorflow as tf
@@ -85,6 +85,8 @@ class ConditionedSeparatorTrainer:
         bg_snr_db_range: Tuple[float, float] = (15.0, 30.0),
         max_mix: int = 4,
         min_clips_per_class: int = 40,
+        over_firing_classes: Optional[List[str]] = None,
+        over_firing_weight: float = 3.0,
     ):
         self.data_root = data_root
         self.model_save_dir = model_save_dir
@@ -102,6 +104,8 @@ class ConditionedSeparatorTrainer:
         self.bg_snr_db_range = bg_snr_db_range
         self.max_mix = max_mix
         self.min_clips_per_class = min_clips_per_class
+        self.over_firing_classes = over_firing_classes
+        self.over_firing_weight = over_firing_weight
 
         self.model_save_dir.mkdir(parents=True, exist_ok=True)
         stem = cfg.model_stem(self.model_version)
@@ -118,6 +122,8 @@ class ConditionedSeparatorTrainer:
             bg_noise_prob=self.bg_noise_prob,
             bg_snr_db_range=self.bg_snr_db_range,
             min_clips_per_class=self.min_clips_per_class,
+            over_firing_classes=self.over_firing_classes,
+            over_firing_weight=self.over_firing_weight,
             seed=self.seed + seed_offset,
         )
 
@@ -221,8 +227,16 @@ if __name__ == "__main__":
              f"Default: {cfg.model_version()}.")
     args = parser.parse_args()
 
+    version = args.version or cfg.model_version()
+    # v2.5 introduces weighted hard-negative training targeting the broadband
+    # classes that over-fired as FPs in v2.4's threshold sweep.
+    is_v25 = version == "v2.5"
     ConditionedSeparatorTrainer(
         data_root=cfg.DATA_ROOT,
         model_save_dir=cfg.MODELS_DIR,
-        model_version=args.version,
+        model_version=version,
+        negative_prob=0.25 if is_v25 else 0.15,
+        over_firing_classes=(
+            ["siren", "thunderstorm", "clock_alarm"] if is_v25 else None),
+        over_firing_weight=3.0,
     ).train()

@@ -34,8 +34,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # These are the DEFAULTS used unless the caller overrides them. The CLI
 # exposes them as flags so we can sweep without editing code.
 ABSOLUTE_FLOOR = 0.05
-RELATIVE_CAP = 0.65
-TOP_K = 10
+RELATIVE_CAP = 0.80
+TOP_K = 5
 
 
 def _load_model_classes(model_path: Path) -> list:

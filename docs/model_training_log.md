@@ -278,8 +278,8 @@ python src/model_training/train_conditioned_separator.py
 ## v2.4 — Minimum clip-count floor to prune the FSD50K false-positive tail
 
 **File:** `separator_unet_film_multi_v2.4.h5`  
-**Trained:** — (pending Colab run)  
-**Status:** Not yet trained
+**Trained:** June 2025  
+**Status:** Trained — allow-list + threshold sweep applied post-training; superseded by v2.5
 
 ### Hyperparameters
 | Parameter | Value | Change from v2.3 |
@@ -298,18 +298,142 @@ python src/model_training/train_conditioned_separator.py
 
 ### Dataset
 - ESC-50 + UrbanSound8K + FSD50K, **with a post-merge minimum clip-count floor of 40 clips/class.**
-- The floor prunes the FSD50K long tail. ESC-50 (40 clips/class) and UrbanSound8K (hundreds/class) are unaffected; the final class count will be ESC-50/UrbanSound8K plus only the FSD50K classes that clear 40 clips after aliasing.
+- The floor prunes the FSD50K long tail. ESC-50 (40 clips/class) and UrbanSound8K (hundreds/class) are unaffected; final class count is ESC-50/UrbanSound8K plus FSD50K classes that clear 40 clips after aliasing.
 
 ### Changes vs v2.3
 
-- **New `min_clips_per_class=40` floor in `load_all_datasets`.** v2.3's detection collapse (F1 0.02) was driven by FSD50K leaf classes (`purr`, `bass_guitar`, `ringtone`, `boom`...) firing as systematic false positives. Root cause: many FSD50K leaf labels are backed by only a handful of clips, and a class learned from so few (noisy, multi-label) examples produces a diffuse, non-discriminative mask that scores spuriously high on unrelated audio. The same ~5.6:1 positive:negative ratio applies to ESC-50 classes — which do **not** over-fire — so the discriminator is per-class data volume/quality, not the negative rate or cross-dataset mixing (mixtures were already cross-dataset, and ~76% of v2.3's negatives already targeted FSD50K classes).
+- **New `min_clips_per_class=40` floor in `load_all_datasets`.** v2.3's detection collapse (F1 0.02) was driven by FSD50K leaf classes (`purr`, `bass_guitar`, `ringtone`, `boom`...) firing as systematic false positives. Root cause: many FSD50K leaf labels are backed by only a handful of clips, and a class learned from so few (noisy, multi-label) examples produces a diffuse, non-discriminative mask that scores spuriously high on unrelated audio.
 - The floor is applied **post-merge**, so cross-dataset aliases pool first (FSD50K `bark` clips count toward ESC-50 `dog`) and only genuinely under-supported, FSD50K-only labels are dropped.
-- **Single-variable change** (clean attribution). If false positives persist after v2.4, v2.5 adds hard cross-dataset negatives (class-balanced absent-class queries) as the reinforcing fix. The floor value (40) is tunable on the v2.5 side if needed.
+
+### Evaluation results (v2.4)
+
+#### SI-SDR (evaluate_conditioned_separator.py)
+| Metric | Value |
+|---|---|
+| Mean SI-SDRi | −20.05 dB |
+| Median SI-SDRi | (not recorded) |
+| Digital upper bound | 75.10 dB |
+
+SI-SDRi is still negative — the model is not yet net-positive at waveform-level separation, but this metric measures the stem in isolation, not the perceptually-relevant residual after subtraction.
+
+#### Detection (evaluate_detection.py) — raw v2.4, no allow-list
+| Metric | Value |
+|---|---|
+| Macro F1 | 0.05 |
+| Total TP | 21 |
+| Total FP | 1078 |
+| Total FN | 468 |
+
+Root cause: FSD50K-only classes (`ringtone`, `telephone`, `[no local audio]`...) in the allow-list survived the 40-clip floor but cannot be validated by local ESC-50/UrbanSound8K test audio — they fire as FPs on every mixture. The floor pruned the *worst* long-tail classes but not all of them.
+
+#### Detection — v2.4 + allow-list (restrict ranking to locally-validatable classes)
+| Metric | Value |
+|---|---|
+| Macro F1 | 0.09 |
+| Total TP | 74 |
+| Total FP | 764 |
+| Total FN | 426 |
+
+Allow-list generated with `--write-allowlist` (auto-mode: intersection of model vocabulary with ESC-50+UrbanSound8K class names). `[no local audio]` FPs eliminated completely.
+
+#### Detection threshold sweep (cap × top_k grid)
+| `relative_cap` | `top_k` | Macro F1 | TP | FP | FN | Notes |
+|---|---|---|---|---|---|---|
+| 0.65 | 10 | 0.11 | ~150 | ~900 | ~370 | More TPs, many FPs |
+| 0.80 | 5 | 0.08 | ~80 | ~450 | ~420 | **Best UX: fewest spurious surface** |
+| 0.90 | 5 | 0.04 | ~40 | ~150 | ~460 | Too aggressive, misses real classes |
+
+**Selected defaults for webapp and eval: `cap=0.80, top_k=5`.**
+
+Siren, thunderstorm, and clock_alarm remain persistent FPs at all threshold levels (32–58 FPs each at cap=0.90). These are broadband/long-duration classes whose masks fire diffusely across unrelated audio — a structural problem that threshold tuning cannot fix.
+
+### Post-training code changes (no retraining)
+- `model_config.py`: Central version/path config; `SNC_MODEL_VERSION` env var controls pipeline.
+- `dataset_sources.py`: Pickle cache (`_decoded_cache_v1_*.pkl`); `SNC_DATA_CACHE_DIR` env var routes to local SSD.
+- `evaluate_detection.py`: Detection allow-list support; threshold CLI flags (`--absolute-floor`, `--relative-cap`, `--top-k`).
+- `webapp.py`: Allow-list loaded at model load; `cap=0.80, top_k=5` defaults.
+
+### Key lessons for v2.5
+- The clip-count floor alone does not eliminate FPs from FSD50K classes that pass the floor but have no local-audio counterpart. The allow-list is the correct structural fix, but it is a filter, not a model fix — the model still produces diffuse masks for broadband classes.
+- `siren`, `thunderstorm`, `clock_alarm` require the model to learn a hard boundary between these and acoustically similar classes. The tool is **weighted hard-negative training**: over-fire classes are selected as absent-class query targets more frequently, forcing the model to suppress its mask when these classes are not actually in the mixture.
+
+---
+
+## v2.5 — Weighted hard-negative training to fix over-firing broadband classes
+
+**File:** `separator_unet_film_multi_v2.5.h5`  
+**Trained:** — (pending Colab run)  
+**Status:** Not yet trained
+
+### Motivation
+
+Threshold sweep analysis (v2.4) showed that `siren`, `thunderstorm`, and `clock_alarm` produce 32–58 false positives each at every threshold level. These are acoustically broadband or long-duration classes — their masks are high-energy and non-specific. No cutoff value fixes this because the root cause is the model's internal representation, not the threshold.
+
+The fix: during training, when drawing a **negative example** (absent class → target is silence), select these over-firing classes as the query target with 2–3× higher probability. This forces the model to learn: "when this specific class is absent, the mask must be near-zero."
+
+### Hyperparameters
+| Parameter | Value | Change from v2.4 |
+|---|---|---|
+| `base_filters` | 32 | — |
+| `batch_size` | 16 | — |
+| `epochs` | 60 | — |
+| `steps_per_epoch` | 500 | — |
+| `n_val` | 800 | — |
+| `learning_rate` | 1e-3 | — |
+| `patience` | 10 | — |
+| `negative_prob` | **0.25** | **0.15 → 0.25** |
+| `bg_noise_prob` | 0.10 | — |
+| `bg_snr_db_range` | (15.0, 30.0) dB | — |
+| `min_clips_per_class` | 40 | — |
+| `over_firing_classes` | `["siren", "thunderstorm", "clock_alarm"]` | **new** |
+| `over_firing_weight` | `3.0` | **new** |
+
+### Architecture changes
+None. Pure training-data-weighting change.
+
+### Changes vs v2.4
+
+1. **`negative_prob` 0.15 → 0.25.** v2.4 negatives at 15% are too rare for the model to learn hard suppression for any class. 25% is the v1.0 value that worked well before over-augmentation broke v2.0.
+
+2. **Weighted negative class selection in `SeparationMixer`.** Currently the absent class for a negative example is drawn uniformly from all classes. New behaviour: a weight vector is built where `over_firing_classes` get `over_firing_weight` (3.0) and all others get 1.0; the vector is normalised to a probability distribution and used to sample the absent class. This increases the frequency of hard-negative training examples for the most problematic classes without changing the mixture generation logic or the positive examples.
+
+### Required code changes
+
+**`src/data_preparation/separation_mixer.py`:**
+```python
+# New __init__ parameters:
+over_firing_classes: Optional[List[str]] = None
+over_firing_weight: float = 3.0
+
+# Build weight vector in __init__:
+weights = np.ones(len(class_names))
+if over_firing_classes:
+    for cls in over_firing_classes:
+        if cls in class_idx:
+            weights[class_idx[cls]] = over_firing_weight
+self._neg_weights = weights / weights.sum()
+
+# In _sample_negative(), replace uniform draw:
+# OLD: absent_cls = rng.choice(all_classes_except_present)
+# NEW: draw from self._neg_weights renormalised over absent classes
+absent_probs = self._neg_weights.copy()
+for p in present_classes:
+    absent_probs[class_idx[p]] = 0.0
+absent_probs /= absent_probs.sum()
+absent_cls = rng.choice(class_names, p=absent_probs)
+```
+
+**`src/model_training/train_conditioned_separator.py`:**
+```python
+# Pass over_firing_classes to mixer:
+over_firing_classes=["siren", "thunderstorm", "clock_alarm"]
+```
 
 ### How to train
 ```bash
-python src/model_training/train_conditioned_separator.py
+python src/model_training/train_conditioned_separator.py --version v2.5
 ```
+Or set `SNC_MODEL_VERSION=v2.5` in the Colab version cell.
 
 ---
 

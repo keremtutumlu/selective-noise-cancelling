@@ -193,11 +193,11 @@ def detect_sounds(file_path):
     if not ranked:
         return ([gr.update(choices=[], value=[]),
                  (SAMPLE_RATE, audio), None, None] + cleared)
-    # Relative cap at 0.65 of the winner (tighter than the old 0.40) to
-    # reduce false positives; absolute floor keeps very quiet but real
-    # classes reachable.
-    cutoff = max(0.05, 0.65 * scores[ranked[0]])
-    detected = [n for n in ranked if scores[n] >= cutoff][:10]
+    # Relative cap at 0.80 of the winner and top-5 limit to reduce FPs
+    # while keeping precision high (threshold sweep result: cap=0.80, k=5
+    # gives the best UX with fewest spurious detections).
+    cutoff = max(0.05, 0.80 * scores[ranked[0]])
+    detected = [n for n in ranked if scores[n] >= cutoff][:5]
     return ([gr.update(choices=detected, value=[]),
              (SAMPLE_RATE, audio), None, None] + cleared)
 

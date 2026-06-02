@@ -31,8 +31,11 @@ from separation_mixer import SeparationMixer  # noqa: E402
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Detection thresholds — kept in sync with webapp.detect_sounds.
+# These are the DEFAULTS used unless the caller overrides them. The CLI
+# exposes them as flags so we can sweep without editing code.
 ABSOLUTE_FLOOR = 0.05
 RELATIVE_CAP = 0.65
+TOP_K = 10
 
 
 def _load_model_classes(model_path: Path) -> list:
@@ -62,7 +65,9 @@ def _spectrogram(waveform):
     return mag
 
 
-def detect_classes(model, class_names, mixture, allowed=None):
+def detect_classes(model, class_names, mixture, allowed=None,
+                   absolute_floor=ABSOLUTE_FLOOR, relative_cap=RELATIVE_CAP,
+                   top_k=TOP_K):
     """Webapp-equivalent detection: peak-normalise, score every class, threshold.
 
     Every class query for one mixture is run in a single batched predict (the
@@ -74,6 +79,11 @@ def detect_classes(model, class_names, mixture, allowed=None):
     ranking and the cutoff are computed over the allowed subset only, so a
     class the local data cannot validate can never win the mixture or push the
     relative cutoff up. ``None`` = no restriction.
+
+    ``absolute_floor`` / ``relative_cap`` / ``top_k`` override the module-level
+    defaults so a single eval run can sweep thresholds without code edits.
+    Raising ``relative_cap`` tightens precision; lowering ``top_k`` caps
+    aggressive over-firing on broadband classes.
     """
     peak = np.max(np.abs(mixture))
     if peak > 1e-6:
@@ -101,21 +111,29 @@ def detect_classes(model, class_names, mixture, allowed=None):
               if n in allowed_set]
     if not ranked:
         return set(), scores
-    cutoff = max(ABSOLUTE_FLOOR, RELATIVE_CAP * scores[ranked[0]])
-    detected = [n for n in ranked if scores[n] >= cutoff][:10]
+    cutoff = max(absolute_floor, relative_cap * scores[ranked[0]])
+    detected = [n for n in ranked if scores[n] >= cutoff][:top_k]
     return set(detected), scores
 
 
 def evaluate(model_path: Path, data_root: Path, n_test: int = 200,
-             seed: int = 7777, allowed=None) -> dict:
+             seed: int = 7777, allowed=None,
+             absolute_floor: float = ABSOLUTE_FLOOR,
+             relative_cap: float = RELATIVE_CAP,
+             top_k: int = TOP_K) -> dict:
     """Run the detection sweep and return a metric dict alongside the printout.
 
     ``allowed`` is an optional list of class names detection may surface; when
     given, ranking and cutoff are computed over that subset only (see
     ``detect_classes``). ``None`` evaluates over the full model vocabulary.
+
+    ``absolute_floor`` / ``relative_cap`` / ``top_k`` override the defaults to
+    sweep cutoff stringency.
     """
     print(f"\nDetection Evaluation — {model_path.name}")
-    print(f"Test mixtures: {n_test}\n")
+    print(f"Test mixtures: {n_test}")
+    print(f"Thresholds   : floor={absolute_floor}  relative_cap={relative_cap}  "
+          f"top_k={top_k}\n")
 
     model = tf.keras.models.load_model(model_path, compile=False)
     model_classes = _load_model_classes(model_path)
@@ -156,7 +174,8 @@ def evaluate(model_path: Path, data_root: Path, n_test: int = 200,
             mixture += window
         mixture = mixer._maybe_add_background_noise(mixture)
 
-        detected, _ = detect_classes(model, model_classes, mixture, allowed)
+        detected, _ = detect_classes(model, model_classes, mixture, allowed,
+                                     absolute_floor, relative_cap, top_k)
 
         for cls in present:
             n_present[cls] += 1
@@ -239,6 +258,16 @@ if __name__ == "__main__":
         help="Write an allow-list of locally-validatable classes next to the "
              "checkpoint, then evaluate with it. This is the free no-retrain "
              "fix for the FSD50K false-positive problem.")
+    parser.add_argument(
+        "--absolute-floor", type=float, default=ABSOLUTE_FLOOR,
+        help=f"Minimum score for a class to be surfaced. Default {ABSOLUTE_FLOOR}.")
+    parser.add_argument(
+        "--relative-cap", type=float, default=RELATIVE_CAP,
+        help=f"Score cutoff = max(floor, cap * winner_score). Raising this "
+             f"tightens precision. Default {RELATIVE_CAP}.")
+    parser.add_argument(
+        "--top-k", type=int, default=TOP_K,
+        help=f"Max classes surfaced per mixture. Default {TOP_K}.")
     args = parser.parse_args()
 
     model_path = cfg.model_path(args.version)
@@ -264,4 +293,7 @@ if __name__ == "__main__":
         model_path=model_path,
         data_root=cfg.DATA_ROOT,
         allowed=allowed,
+        absolute_floor=args.absolute_floor,
+        relative_cap=args.relative_cap,
+        top_k=args.top_k,
     )

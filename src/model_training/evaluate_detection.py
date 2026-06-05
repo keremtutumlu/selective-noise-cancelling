@@ -8,12 +8,23 @@ recall / F1 plus a confusion summary.
 
 Run from project root:
     python src/model_training/evaluate_detection.py
+
+Detection scoring strategy
+--------------------------
+If the loaded model has a detection head (two outputs: ``[est_stem,
+class_presence]``) the ``class_presence`` sigmoid probability is used as the
+detection score directly — this is the architecturally correct signal.
+
+If the model has a single output (legacy mask-only architecture) the script
+falls back to the heuristic: ``energy_ratio × (1 + CoV²)``.
 """
+import io
 import json
 import logging
 import sys
 from collections import defaultdict
 from pathlib import Path
+from typing import Optional
 
 import librosa
 import numpy as np
@@ -65,6 +76,11 @@ def _spectrogram(waveform):
     return mag
 
 
+def _has_detection_head(model) -> bool:
+    """True if the model was built with ``with_detection_head=True``."""
+    return len(model.outputs) > 1
+
+
 def detect_classes(model, class_names, mixture, allowed=None,
                    absolute_floor=ABSOLUTE_FLOOR, relative_cap=RELATIVE_CAP,
                    top_k=TOP_K):
@@ -84,6 +100,11 @@ def detect_classes(model, class_names, mixture, allowed=None,
     defaults so a single eval run can sweep thresholds without code edits.
     Raising ``relative_cap`` tightens precision; lowering ``top_k`` caps
     aggressive over-firing on broadband classes.
+
+    When the model has a detection head (two outputs), the ``class_presence``
+    probability replaces the mask-energy heuristic as the primary score, and
+    ``absolute_floor`` / ``relative_cap`` / ``top_k`` are applied to those
+    probabilities directly.
     """
     peak = np.max(np.abs(mixture))
     if peak > 1e-6:
@@ -97,14 +118,20 @@ def detect_classes(model, class_names, mixture, allowed=None,
     log_b = np.repeat(log[None], n, axis=0)
     lin_b = np.repeat(lin[None], n, axis=0)
     query_b = np.eye(n, dtype=np.float32)  # row i = one-hot query for class i
-    est = model.predict([log_b, query_b, lin_b], batch_size=64, verbose=0)
+    preds = model.predict([log_b, query_b, lin_b], batch_size=64, verbose=0)
 
     scores = {}
-    for i, name in enumerate(class_names):
-        e = est[i]
-        energy_ratio = float(np.mean(e ** 2) / mix_energy)
-        specificity = float(np.std(e) / (np.mean(e) + 1e-8))
-        scores[name] = energy_ratio * (1.0 + specificity ** 2)
+    if _has_detection_head(model):
+        est, presence_probs = preds  # presence_probs: (n, 1)
+        for i, name in enumerate(class_names):
+            scores[name] = float(presence_probs[i, 0])
+    else:
+        est = preds
+        for i, name in enumerate(class_names):
+            e = est[i]
+            energy_ratio = float(np.mean(e ** 2) / mix_energy)
+            specificity = float(np.std(e) / (np.mean(e) + 1e-8))
+            scores[name] = energy_ratio * (1.0 + specificity ** 2)
 
     allowed_set = set(class_names) if allowed is None else set(allowed)
     ranked = [n for n in sorted(scores, key=scores.get, reverse=True)
@@ -120,7 +147,8 @@ def evaluate(model_path: Path, data_root: Path, n_test: int = 200,
              seed: int = 7777, allowed=None,
              absolute_floor: float = ABSOLUTE_FLOOR,
              relative_cap: float = RELATIVE_CAP,
-             top_k: int = TOP_K) -> dict:
+             top_k: int = TOP_K,
+             version: Optional[str] = None) -> dict:
     """Run the detection sweep and return a metric dict alongside the printout.
 
     ``allowed`` is an optional list of class names detection may surface; when
@@ -219,13 +247,26 @@ def evaluate(model_path: Path, data_root: Path, n_test: int = 200,
             tag = "" if cls in available_set else "  [no local audio]"
             print(f"    {cls:<22}{count:>5} FPs{tag}")
     print("=" * 60 + "\n")
-    return {
+    result = {
         "f1_mean": float(np.mean(f1s)) if f1s else 0.0,
         "tp_total": int(sum(tp.values())),
         "fp_total": int(sum(fp.values())),
         "fn_total": int(sum(fn.values())),
         "n_test": n_test,
+        "has_detection_head": _has_detection_head(model),
+        "thresholds": {
+            "absolute_floor": absolute_floor,
+            "relative_cap": relative_cap,
+            "top_k": top_k,
+        },
     }
+    cfg.log_drive_run(
+        script="evaluate_detection",
+        version=version or model_path.stem,
+        metrics=result,
+        notes=f"floor={absolute_floor} cap={relative_cap} top_k={top_k}",
+    )
+    return result
 
 
 def _local_classes(data_root: Path, model_classes: list) -> list:
@@ -296,4 +337,5 @@ if __name__ == "__main__":
         absolute_floor=args.absolute_floor,
         relative_cap=args.relative_cap,
         top_k=args.top_k,
+        version=args.version or cfg.model_version(),
     )

@@ -362,8 +362,11 @@ Siren, thunderstorm, and clock_alarm remain persistent FPs at all threshold leve
 ## v2.5 — Weighted hard-negative training to fix over-firing broadband classes
 
 **File:** `separator_unet_film_multi_v2.5.h5`  
-**Trained:** — (pending Colab run)  
-**Status:** Not yet trained
+**Trained:** 2026-06-03 (Colab)  
+**Status:** INVALID — do not use. File on Drive pre-dates the weighted hard-negative
+code (committed 2026-06-04). The checkpoint was produced with v2.4 config
+(negative_prob=0.15, no over_firing_classes) but named v2.5. Re-training
+superseded by v2.6.
 
 ### Motivation
 
@@ -434,6 +437,106 @@ over_firing_classes=["siren", "thunderstorm", "clock_alarm"]
 python src/model_training/train_conditioned_separator.py --version v2.5
 ```
 Or set `SNC_MODEL_VERSION=v2.5` in the Colab version cell.
+
+---
+
+## v2.6 — Detection head + expanded hard-negative list
+
+**File:** `separator_unet_film_multi_v2.6.h5`  
+**Trained:** — (pending Colab run)  
+**Status:** Not yet trained
+
+### Motivation
+
+v2.5 (fake) evaluation results: SI-SDRi −23.65 dB, detection F1 0.07.
+Root cause analysis identified two structural problems:
+
+1. **Detection is architecturally wrong.** Scoring mask energy as a proxy for
+   class presence is fundamentally weak. Broadband classes (wind, thunderstorm,
+   siren) produce high-energy diffuse masks for every mixture regardless of
+   whether the class is actually present, making the heuristic unreliable by
+   design.
+2. **Hard-negative list too small.** The v2.5 plan targeted only 3 classes; the
+   threshold sweep showed 10+ classes with 15–54 FPs each. Treating 3 of them
+   as special cases barely moves the needle.
+
+v2.6 fixes both:
+- A **detection head** — a GlobalAveragePooling2D + Dense(128) + Dense(1, sigmoid)
+  branch from the FiLM-conditioned bottleneck — is trained alongside the U-Net
+  to predict P(queried class present | mixture). The bottleneck is already
+  conditioned on the class query via FiLM, so this head has all the information
+  it needs. At inference, detection uses the head's sigmoid probability directly
+  instead of the mask-energy heuristic.
+- The **over-firing list is expanded to 10 classes** (top-FP offenders from the
+  v2.5 threshold sweep).
+
+### Hyperparameters
+| Parameter | Value | Change from v2.4 |
+|---|---|---|
+| `base_filters` | 32 | — |
+| `batch_size` | 16 | — |
+| `epochs` | 60 | — |
+| `steps_per_epoch` | 500 | — |
+| `n_val` | 800 | — |
+| `learning_rate` | 1e-3 | — |
+| `patience` | 10 | — |
+| `negative_prob` | **0.25** | **0.15 → 0.25** |
+| `bg_noise_prob` | 0.10 | — |
+| `bg_snr_db_range` | (15.0, 30.0) dB | — |
+| `min_clips_per_class` | 40 | — |
+| `over_firing_classes` | (10 classes — see below) | **new** |
+| `over_firing_weight` | `3.0` | **new** |
+| `with_detection_head` | `True` | **new** |
+| detection loss weight | `0.3` | **new** |
+
+**`over_firing_classes` for v2.6:**
+```python
+["thunderstorm", "wind", "clock_alarm", "siren",
+ "door_wood_knock", "street_music", "rooster", "train",
+ "airplane", "cat"]
+```
+
+### Architecture changes vs v2.4/v2.5
+
+Detection head added to the FiLM-conditioned U-Net:
+
+```
+bottleneck (16×8×512, already FiLM-conditioned on class query)
+    → GlobalAveragePooling2D   (512,)
+    → Dense(128, relu)         (128,)
+    → Dense(1, sigmoid)        scalar  →  class_presence
+```
+
+The training model now has **two outputs**:
+- `est_stem_magnitude` (separation, trained with multi-resolution L1, weight 1.0)
+- `class_presence` (detection, trained with binary cross-entropy, weight 0.3)
+
+Presence labels are derived automatically from the target stem magnitude:
+`presence = 1.0 if max|target_stem| > 1e-6 else 0.0` (positive/negative examples).
+
+The saved `.h5` checkpoint has 3 inputs `[log_mag, class_query, linear_mag]` and
+2 outputs `[est_stem, class_presence]`.
+
+### Backward compatibility
+
+All evaluation and webapp code checks `len(model.outputs)` to detect the
+architecture:
+- `len == 1`: legacy mask-only model (v2.4 and earlier) → fall back to
+  mask-energy heuristic for detection.
+- `len == 2`: v2.6+ model with detection head → use `class_presence` probability.
+
+No code changes needed to evaluate or serve older checkpoints.
+
+### How to train
+Set `SNC_MODEL_VERSION=v2.6` in the Colab version cell, then run the train cell.
+Expected log line: `SeparationMixer: weighted hard-negative for 10/10 over-firing classes (weight=3.0).`
+
+```bash
+python src/model_training/train_conditioned_separator.py --version v2.6
+```
+
+### Evaluation results
+— pending first Colab run —
 
 ---
 

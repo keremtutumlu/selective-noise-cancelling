@@ -143,7 +143,9 @@ class ConditionedSeparatorEvaluator:
             frames.append(n_frames)
 
         print(f"Running separation on {n} test mixtures...", end=" ", flush=True)
-        est_mags = model.predict([log_b, query_b, lin_b], batch_size=16, verbose=0)
+        preds = model.predict([log_b, query_b, lin_b], batch_size=16, verbose=0)
+        # Support both single-output (mask only) and dual-output (mask + detection head).
+        est_mags = preds[0] if isinstance(preds, list) else preds
         print("done.\n")
 
         sdr_model = {c: [] for c in class_names}
@@ -176,12 +178,19 @@ class ConditionedSeparatorEvaluator:
         print(f"\n  SI-SDRi (improvement over the unprocessed mixture): "
               f"{mean_model - mean_mix:+.2f} dB")
         print("=" * 68 + "\n")
-        return {
+
+        result = {
             "si_sdri": mean_model - mean_mix,
             "si_sdr_model": mean_model,
             "si_sdr_mix": mean_mix,
             "n_scored": len(all_model),
         }
+        cfg.log_drive_run(
+            script="evaluate_conditioned_separator",
+            version=str(self.model_path.stem),
+            metrics=result,
+        )
+        return result
 
 
 if __name__ == "__main__":

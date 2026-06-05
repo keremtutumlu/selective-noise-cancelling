@@ -146,8 +146,13 @@ def _empty_extracted_slots():
             for _ in range(MAX_EXTRACTED_SLOTS)]
 
 
+def _model_has_detection_head() -> bool:
+    """True if the currently loaded model has a detection head (two outputs)."""
+    return len(_current["model"].outputs) > 1
+
+
 def detect_sounds(file_path):
-    """Detect present classes using U-Net stem energy + mask specificity score."""
+    """Detect present classes; uses detection-head probability when available."""
     cleared = _empty_extracted_slots()
     if not file_path:
         return [gr.update(choices=[], value=[]), None, None, None] + cleared
@@ -171,15 +176,23 @@ def detect_sounds(file_path):
     mix_energy = float(np.mean(lins ** 2)) + 1e-8
     scores = {}
     model = _current["model"]
+    has_det = _model_has_detection_head()
+
     for name in _current["class_names"]:
         q = np.tile(_query(name), (len(windows), 1))
-        est = model.predict([logs, q, lins], verbose=0)
-        energy_ratio = float(np.mean(est ** 2) / mix_energy)
-        # CoV²: real sounds produce concentrated masks (high CoV); broadband
-        # noise produces diffuse uniform masks (low CoV). Squaring sharpens
-        # the gap between specific and diffuse detections.
-        specificity = float(np.std(est) / (np.mean(est) + 1e-8))
-        scores[name] = energy_ratio * (1.0 + specificity ** 2)
+        preds = model.predict([logs, q, lins], verbose=0)
+        if has_det:
+            # preds = [est_stem, presence_prob]; average over windows.
+            presence_prob = preds[1]  # shape (n_windows, 1)
+            scores[name] = float(np.mean(presence_prob))
+        else:
+            est = preds
+            energy_ratio = float(np.mean(est ** 2) / mix_energy)
+            # CoV²: real sounds produce concentrated masks (high CoV); broadband
+            # noise produces diffuse uniform masks (low CoV). Squaring sharpens
+            # the gap between specific and diffuse detections.
+            specificity = float(np.std(est) / (np.mean(est) + 1e-8))
+            scores[name] = energy_ratio * (1.0 + specificity ** 2)
 
     # If the model ships a detection allow-list, rank and threshold over that
     # subset only. Scoring above still runs over the full vocabulary (query
@@ -256,10 +269,12 @@ def remove_sounds(file_path, selected, strength):
 
         lin = chunk[..., None]
         log = np.log1p(lin)
-        est = _current["model"].predict(
+        preds = _current["model"].predict(
             [np.repeat(log[None], len(selected), 0),
              queries,
              np.repeat(lin[None], len(selected), 0)], verbose=0)
+        # Support dual-output models (separation + detection head).
+        est = preds[0] if isinstance(preds, list) else preds
 
         # Multiplicative amplitude-ratio masks across all selected classes.
         # Amplitude ratio (est/mix) is more responsive than power ratio (est²/mix²)

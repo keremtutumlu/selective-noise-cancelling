@@ -8,23 +8,31 @@ stable for early stopping and checkpointing.
 
 Training model
 --------------
-The conditioned U-Net maps ``[log magnitude, class query]`` to one mask.
-For training it is wrapped so a standard ``model.fit`` works:
+The conditioned U-Net maps ``[log magnitude, class query]`` to one mask
+(two outputs when ``with_detection_head=True``). For training it is wrapped
+so a standard ``model.fit`` works:
 
     log magnitude  --\\
     class query    ---- conditioned U-Net --> mask --\\
-    linear magnitude --------------------------------> multiply --> estimated
-                                                                    stem magnitude
+    linear magnitude --------------------------------> multiply --> est stem magnitude
+                                         \\-> class_presence (detection head only)
 
 The mask is applied to the linear magnitude with a plain Multiply layer
-(no Lambda — the saved ``.h5`` reloads without custom objects). Loss is
-a multi-resolution L1 (full + half + quarter resolution) between the
-estimated and the true target-stem magnitude.
+(no Lambda — the saved ``.h5`` reloads without custom objects).
+
+Losses:
+- Separation : multi-resolution L1 (full + ½ + ¼ resolution), weight 1.0
+- Detection  : binary cross-entropy on P(class present), weight 0.3
+               (only when ``with_detection_head=True``)
+
+The presence label is derived inside the training pipeline from the target
+stem magnitude: presence = 1.0 if max|target_stem| > 1e-6 else 0.0.
 
 Output (version comes from model_config — SNC_MODEL_VERSION env var or default):
     saved_models/separation_models/separator_unet_film_multi_<version>.h5
     saved_models/separation_models/separator_unet_film_multi_<version>_classes.json
 """
+import io
 import json
 import logging
 import sys
@@ -87,6 +95,7 @@ class ConditionedSeparatorTrainer:
         min_clips_per_class: int = 40,
         over_firing_classes: Optional[List[str]] = None,
         over_firing_weight: float = 3.0,
+        with_detection_head: bool = False,
     ):
         self.data_root = data_root
         self.model_save_dir = model_save_dir
@@ -106,6 +115,7 @@ class ConditionedSeparatorTrainer:
         self.min_clips_per_class = min_clips_per_class
         self.over_firing_classes = over_firing_classes
         self.over_firing_weight = over_firing_weight
+        self.with_detection_head = with_detection_head
 
         self.model_save_dir.mkdir(parents=True, exist_ok=True)
         stem = cfg.model_stem(self.model_version)
@@ -140,12 +150,25 @@ class ConditionedSeparatorTrainer:
              tf.TensorSpec(spec_shape, tf.float32)),
             tf.TensorSpec(spec_shape, tf.float32),
         )
-        train_ds = (
-            tf.data.Dataset.from_generator(train_mixer.generate,
-                                           output_signature=output_signature)
-            .batch(self.batch_size)
-            .prefetch(tf.data.AUTOTUNE)
-        )
+        base_ds = tf.data.Dataset.from_generator(
+            train_mixer.generate, output_signature=output_signature)
+
+        if self.with_detection_head:
+            # Derive a presence label from the target stem: 1.0 if the
+            # queried class is present, 0.0 for negative examples.
+            def _add_presence(inputs, target_mag):
+                presence = tf.expand_dims(
+                    tf.cast(tf.reduce_max(tf.abs(target_mag)) > 1e-6,
+                            tf.float32), 0)
+                return inputs, [target_mag, presence]
+            train_ds = (base_ds
+                        .map(_add_presence, num_parallel_calls=tf.data.AUTOTUNE)
+                        .batch(self.batch_size)
+                        .prefetch(tf.data.AUTOTUNE))
+        else:
+            train_ds = (base_ds
+                        .batch(self.batch_size)
+                        .prefetch(tf.data.AUTOTUNE))
 
         # Materialise a fixed validation set so val_loss does not drift.
         logging.info(f"Building fixed validation set ({self.n_val} examples)...")
@@ -155,7 +178,17 @@ class ConditionedSeparatorTrainer:
         val_query = np.stack([e[0][1] for e in examples])
         val_lin = np.stack([e[0][2] for e in examples])
         val_target = np.stack([e[1] for e in examples])
-        validation_data = ([val_log, val_query, val_lin], val_target)
+
+        if self.with_detection_head:
+            val_presence = (
+                np.max(np.abs(val_target), axis=(1, 2, 3)) > 1e-6
+            ).astype(np.float32)[:, np.newaxis]
+            validation_data = (
+                [val_log, val_query, val_lin],
+                [val_target, val_presence],
+            )
+        else:
+            validation_data = ([val_log, val_query, val_lin], val_target)
 
         return train_ds, validation_data, train_mixer.class_names
 
@@ -165,16 +198,27 @@ class ConditionedSeparatorTrainer:
             input_shape=(FREQ_BINS, TIME_FRAMES, 1),
             num_classes=num_classes,
             base_filters=self.base_filters,
+            with_detection_head=self.with_detection_head,
         )
         log_in = Input(shape=(FREQ_BINS, TIME_FRAMES, 1), name="log_magnitude")
         query_in = Input(shape=(num_classes,), name="class_query")
         lin_in = Input(shape=(FREQ_BINS, TIME_FRAMES, 1), name="linear_magnitude")
 
-        mask = cond_unet([log_in, query_in])
-        est_stem = Multiply(name="apply_mask")([mask, lin_in])
-
-        training_model = Model([log_in, query_in, lin_in], est_stem,
-                               name="conditioned_separator_training_model")
+        if self.with_detection_head:
+            mask, class_presence = cond_unet([log_in, query_in])
+            est_stem = Multiply(name="apply_mask")([mask, lin_in])
+            training_model = Model(
+                [log_in, query_in, lin_in],
+                [est_stem, class_presence],
+                name="conditioned_separator_training_model",
+            )
+        else:
+            mask = cond_unet([log_in, query_in])
+            est_stem = Multiply(name="apply_mask")([mask, lin_in])
+            training_model = Model(
+                [log_in, query_in, lin_in], est_stem,
+                name="conditioned_separator_training_model",
+            )
         return training_model, cond_unet
 
     def _callbacks(self) -> list:
@@ -198,22 +242,64 @@ class ConditionedSeparatorTrainer:
         logging.info(f"Saved class names to {self.classes_path}")
 
         model, cond_unet = self._build_training_model(len(class_names))
-        model.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=self.learning_rate),
-            loss=_multi_res_l1,
-        )
+        if self.with_detection_head:
+            model.compile(
+                optimizer=tf.keras.optimizers.Adam(learning_rate=self.learning_rate),
+                loss=[_multi_res_l1, "binary_crossentropy"],
+                loss_weights=[1.0, 0.3],
+            )
+        else:
+            model.compile(
+                optimizer=tf.keras.optimizers.Adam(learning_rate=self.learning_rate),
+                loss=_multi_res_l1,
+            )
         cond_unet.summary(print_fn=logging.info)
         logging.info(f"Training model parameters: {model.count_params():,}")
+        logging.info(f"Detection head: {self.with_detection_head}")
 
-        model.fit(
-            train_ds,
-            steps_per_epoch=self.steps_per_epoch,
-            validation_data=validation_data,
-            epochs=self.epochs,
-            callbacks=self._callbacks(),
-            verbose=2,
-        )
+        # Capture all stdout for the Drive log (tee to sys.stdout too).
+        _log_buf = io.StringIO()
+        _orig_stdout = sys.stdout
+
+        class _Tee:
+            def write(self, s):
+                _orig_stdout.write(s)
+                _log_buf.write(s)
+            def flush(self):
+                _orig_stdout.flush()
+
+        sys.stdout = _Tee()
+        try:
+            history = model.fit(
+                train_ds,
+                steps_per_epoch=self.steps_per_epoch,
+                validation_data=validation_data,
+                epochs=self.epochs,
+                callbacks=self._callbacks(),
+                verbose=2,
+            )
+        finally:
+            sys.stdout = _orig_stdout
+
         logging.info(f"Best model saved to {self.checkpoint_path}")
+
+        # Compute final val metrics for the Drive log.
+        hist = history.history
+        best_epoch = int(np.argmin(hist.get("val_loss", [0])))
+        metrics = {
+            "val_loss_best": float(min(hist.get("val_loss", [0]))),
+            "best_epoch": best_epoch + 1,
+            "epochs_trained": len(hist.get("val_loss", [])),
+            "num_classes": len(class_names),
+            "negative_prob": self.negative_prob,
+            "with_detection_head": self.with_detection_head,
+        }
+        cfg.log_drive_run(
+            script="train_conditioned_separator",
+            version=self.model_version,
+            metrics=metrics,
+            output=_log_buf.getvalue(),
+        )
         return model
 
 
@@ -223,20 +309,35 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train the conditioned separator.")
     parser.add_argument(
         "--version", default=None,
-        help=f"Model version tag, e.g. v2.5. Overrides the {cfg.ENV_VAR} env var. "
+        help=f"Model version tag, e.g. v2.6. Overrides the {cfg.ENV_VAR} env var. "
              f"Default: {cfg.model_version()}.")
     args = parser.parse_args()
 
     version = args.version or cfg.model_version()
-    # v2.5 introduces weighted hard-negative training targeting the broadband
-    # classes that over-fired as FPs in v2.4's threshold sweep.
+
+    # Per-version training configuration.  Any version not listed here falls
+    # back to the original v2.4 defaults (safe, no special augmentation).
+    _V25_OVER_FIRING = ["siren", "thunderstorm", "clock_alarm"]
+    # v2.6: expanded FP list (top-10 offenders from v2.5 threshold sweep)
+    # + detection head to replace the mask-energy scoring heuristic.
+    _V26_OVER_FIRING = [
+        "thunderstorm", "wind", "clock_alarm", "siren",
+        "door_wood_knock", "street_music", "rooster", "train",
+        "airplane", "cat",
+    ]
+
     is_v25 = version == "v2.5"
+    is_v26 = version == "v2.6"
+
     ConditionedSeparatorTrainer(
         data_root=cfg.DATA_ROOT,
         model_save_dir=cfg.MODELS_DIR,
         model_version=version,
-        negative_prob=0.25 if is_v25 else 0.15,
+        negative_prob=0.25 if (is_v25 or is_v26) else 0.15,
         over_firing_classes=(
-            ["siren", "thunderstorm", "clock_alarm"] if is_v25 else None),
+            _V26_OVER_FIRING if is_v26 else
+            _V25_OVER_FIRING if is_v25 else None
+        ),
         over_firing_weight=3.0,
+        with_detection_head=is_v26,
     ).train()

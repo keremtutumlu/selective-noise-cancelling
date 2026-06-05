@@ -44,6 +44,7 @@ from tensorflow.keras.layers import (
     Conv2D,
     Conv2DTranspose,
     Dense,
+    GlobalAveragePooling2D,
     Input,
     MaxPooling2D,
     Multiply,
@@ -75,6 +76,7 @@ def build_conditioned_separator(
     num_classes: int = DEFAULT_NUM_CLASSES,
     base_filters: int = 32,
     embed_dim: int = 128,
+    with_detection_head: bool = False,
 ) -> Model:
     """
     Build the query-conditioned separation U-Net.
@@ -86,10 +88,19 @@ def build_conditioned_separator(
             double it. ``32`` gives a ~8.3M-parameter model.
         embed_dim: dimension of the shared query embedding used by all
             FiLM layers.
+        with_detection_head: when ``True``, add a lightweight classifier head
+            on top of the FiLM-conditioned bottleneck that outputs a single
+            sigmoid probability ``P(queried class present | mixture)``.  The
+            model then returns ``[mask, class_presence]`` instead of just
+            ``mask``.  The bottleneck is already conditioned on the class
+            query via FiLM, so the detector implicitly knows *which* class it
+            is assessing.
 
     Returns:
-        A Keras ``Model`` mapping ``[log_magnitude, class_query]`` to a
-        single soft mask ``(freq, time, 1)`` for the queried class.
+        A Keras ``Model`` mapping ``[log_magnitude, class_query]`` to:
+        - ``mask``: soft mask ``(freq, time, 1)`` in ``[0, 1]``.
+        - ``class_presence`` (only when ``with_detection_head=True``):
+          scalar ``(1,)`` probability that the queried class is present.
     """
     log_mag = Input(shape=input_shape, name="mixture_log_magnitude")
     query = Input(shape=(num_classes,), name="class_query")
@@ -130,6 +141,17 @@ def build_conditioned_separator(
 
     mask = Conv2D(1, 1, padding="same", activation="sigmoid",
                   name="target_mask")(d1)
+
+    if with_detection_head:
+        # Detection head: bottleneck is already FiLM-conditioned on the class
+        # query, so GlobalAveragePooling2D collapses it to a class-aware vector.
+        # Dense(1, sigmoid) then predicts P(queried class present | mixture).
+        det = GlobalAveragePooling2D(name="det_pool")(bottleneck)
+        det = Dense(128, activation="relu", name="det_dense")(det)
+        class_presence = Dense(1, activation="sigmoid",
+                               name="class_presence")(det)
+        return Model([log_mag, query], [mask, class_presence],
+                     name=f"conditioned_separator_f{base_filters}_det")
 
     return Model([log_mag, query], mask,
                  name=f"conditioned_separator_f{base_filters}")

@@ -12,9 +12,9 @@ set it once near the top of the notebook and every later cell follows.
 
     # one cell, near the top of the notebook
     import os
-    os.environ["SNC_MODEL_VERSION"] = "v2.5"   # change this to switch versions
+    os.environ["SNC_MODEL_VERSION"] = "v2.6"   # change this to switch versions
 
-    # every later cell now targets v2.5 automatically
+    # every later cell now targets v2.6 automatically
     !python src/model_training/train_conditioned_separator.py
     !python src/model_training/evaluate_conditioned_separator.py
     !python src/model_training/evaluate_detection.py
@@ -24,14 +24,27 @@ this redirects the whole pipeline with no code edits. From a notebook cell that
 imports the code directly the same applies:
 
     import model_config as cfg
-    cfg.model_path()        # -> .../separator_unet_film_multi_v2.5.h5
+    cfg.model_path()        # -> .../separator_unet_film_multi_v2.6.h5
 
 Every helper reads the version lazily, so setting the env var after import still
 takes effect. A ``--version`` CLI flag on each script overrides the env var for
 one-off runs (e.g. comparing v2.3 against v2.4 without re-exporting).
+
+Drive audit log
+---------------
+Set ``SNC_DRIVE_LOG_DIR`` to a directory on mounted Drive before running any
+script.  Every script calls ``log_drive_run()`` at the end to append a
+timestamped JSONL entry with version, key metrics, and the last 4 kB of stdout.
+If the env var is unset or the path does not exist the call is a silent no-op,
+so the local workflow is unaffected.
+
+    import os
+    os.environ["SNC_DRIVE_LOG_DIR"] = "/content/drive/MyDrive/snc/run_logs"
 """
+import datetime
 import json
 import os
+import socket
 from pathlib import Path
 from typing import List, Optional
 
@@ -43,7 +56,7 @@ MODELS_DIR = BASE_DIR / "saved_models" / "separation_models"
 # Default checkpoint version, used when SNC_MODEL_VERSION is unset and no
 # --version flag is passed. Bump this only to move the committed default;
 # day-to-day version switching should go through the env var or the flag.
-DEFAULT_MODEL_VERSION = "v2.5"
+DEFAULT_MODEL_VERSION = "v2.6"
 
 # Saved-model naming scheme from RULES.md:
 #   <task>_<architecture>_<dataset-or-keyfeature>_v<major>.<minor>
@@ -105,3 +118,53 @@ def load_detect_allowlist(version: Optional[str] = None) -> Optional[List[str]]:
     if not isinstance(names, list) or not names:
         return None
     return [str(n) for n in names]
+
+
+# ---------------------------------------------------------------------------
+# Drive audit log
+# ---------------------------------------------------------------------------
+DRIVE_LOG_ENV = "SNC_DRIVE_LOG_DIR"
+
+
+def log_drive_run(
+    script: str,
+    version: str,
+    metrics: dict,
+    output: str = "",
+    notes: str = "",
+) -> None:
+    """Append a timestamped JSONL run-log entry to the Drive log directory.
+
+    Reads ``SNC_DRIVE_LOG_DIR`` from the environment. If the variable is
+    unset or the directory does not exist the call is a silent no-op, so
+    nothing breaks when running locally without Drive mounted.
+
+    Colab one-liner (put near the top of the notebook):
+        os.environ["SNC_DRIVE_LOG_DIR"] = "/content/drive/MyDrive/snc/run_logs"
+
+    Each entry is a JSON object on a single line::
+
+        {"ts": "2026-06-05T12:00:00+00:00", "script": "train", "version":
+         "v2.6", "metrics": {...}, "output": "...last 4 kB...", "notes": ""}
+    """
+    log_dir_str = os.environ.get(DRIVE_LOG_ENV, "").strip()
+    if not log_dir_str:
+        return
+    log_dir = Path(log_dir_str)
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "run_log.jsonl"
+        entry = {
+            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "script": script,
+            "version": version,
+            "metrics": metrics,
+            "output": output[-4000:] if output else "",
+            "notes": notes,
+            "host": socket.gethostname(),
+        }
+        with log_path.open("a") as f:
+            f.write(json.dumps(entry) + "\n")
+        print(f"[drive_log] Appended to {log_path}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[drive_log] WARNING: could not write to {log_dir}: {exc}")

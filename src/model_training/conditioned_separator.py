@@ -139,8 +139,11 @@ def build_conditioned_separator(
     d1 = Conv2DTranspose(base_filters, 2, strides=2, padding="same")(d2)
     d1 = _conv_block(Concatenate()([d1, e1]), base_filters)           # (256, 128)
 
+    # dtype="float32" pins the output to full precision even under a global
+    # mixed_float16 policy: the sigmoid mask and the downstream loss must stay
+    # in float32 for numerical stability (float16 saturates/over-rounds here).
     mask = Conv2D(1, 1, padding="same", activation="sigmoid",
-                  name="target_mask")(d1)
+                  name="target_mask", dtype="float32")(d1)
 
     if with_detection_head:
         # Detection head: bottleneck is already FiLM-conditioned on the class
@@ -148,8 +151,9 @@ def build_conditioned_separator(
         # Dense(1, sigmoid) then predicts P(queried class present | mixture).
         det = GlobalAveragePooling2D(name="det_pool")(bottleneck)
         det = Dense(128, activation="relu", name="det_dense")(det)
+        # float32 output for stable binary cross-entropy under mixed precision.
         class_presence = Dense(1, activation="sigmoid",
-                               name="class_presence")(det)
+                               name="class_presence", dtype="float32")(det)
         return Model([log_mag, query], [mask, class_presence],
                      name=f"conditioned_separator_f{base_filters}_det")
 

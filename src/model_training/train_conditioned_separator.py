@@ -35,6 +35,7 @@ Output (version comes from model_config — SNC_MODEL_VERSION env var or default
 import io
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -96,6 +97,7 @@ class ConditionedSeparatorTrainer:
         over_firing_classes: Optional[List[str]] = None,
         over_firing_weight: float = 3.0,
         with_detection_head: bool = False,
+        jit_compile: bool = False,
     ):
         self.data_root = data_root
         self.model_save_dir = model_save_dir
@@ -116,6 +118,7 @@ class ConditionedSeparatorTrainer:
         self.over_firing_classes = over_firing_classes
         self.over_firing_weight = over_firing_weight
         self.with_detection_head = with_detection_head
+        self.jit_compile = jit_compile
 
         self.model_save_dir.mkdir(parents=True, exist_ok=True)
         stem = cfg.model_stem(self.model_version)
@@ -208,9 +211,11 @@ class ConditionedSeparatorTrainer:
         query_in = Input(shape=(num_classes,), name="class_query")
         lin_in = Input(shape=(FREQ_BINS, TIME_FRAMES, 1), name="linear_magnitude")
 
+        # dtype="float32" on the mask-apply multiply keeps the estimated stem
+        # (and therefore the L1 loss) in full precision under mixed_float16.
         if self.with_detection_head:
             mask, class_presence = cond_unet([log_in, query_in])
-            est_stem = Multiply(name="apply_mask")([mask, lin_in])
+            est_stem = Multiply(name="apply_mask", dtype="float32")([mask, lin_in])
             training_model = Model(
                 [log_in, query_in, lin_in],
                 [est_stem, class_presence],
@@ -218,12 +223,31 @@ class ConditionedSeparatorTrainer:
             )
         else:
             mask = cond_unet([log_in, query_in])
-            est_stem = Multiply(name="apply_mask")([mask, lin_in])
+            est_stem = Multiply(name="apply_mask", dtype="float32")([mask, lin_in])
             training_model = Model(
                 [log_in, query_in, lin_in], est_stem,
                 name="conditioned_separator_training_model",
             )
         return training_model, cond_unet
+
+    def _make_optimizer(self):
+        """Adam, wrapped in LossScaleOptimizer under mixed precision.
+
+        float16 gradients can underflow to zero; LossScaleOptimizer scales the
+        loss up before backprop and unscales the gradients, preventing it. The
+        wrap is guarded so any failure (or a float32 policy) falls back to plain
+        Adam — training still proceeds, just without loss scaling.
+        """
+        opt = tf.keras.optimizers.Adam(learning_rate=self.learning_rate)
+        try:
+            if tf.keras.mixed_precision.global_policy().name == "mixed_float16":
+                opt = tf.keras.mixed_precision.LossScaleOptimizer(opt)
+                logging.info("Mixed precision active: wrapped Adam in "
+                             "LossScaleOptimizer.")
+        except Exception as exc:  # noqa: BLE001
+            logging.warning(f"LossScaleOptimizer not applied ({exc}); "
+                            f"using plain Adam.")
+        return opt
 
     def _callbacks(self) -> list:
         return [
@@ -262,22 +286,27 @@ class ConditionedSeparatorTrainer:
             logging.info(f"Saved class names to {self.classes_path}")
 
             model, cond_unet = self._build_training_model(len(class_names))
+            optimizer = self._make_optimizer()
             if self.with_detection_head:
                 model.compile(
-                    optimizer=tf.keras.optimizers.Adam(
-                        learning_rate=self.learning_rate),
+                    optimizer=optimizer,
                     loss=[_multi_res_l1, "binary_crossentropy"],
                     loss_weights=[1.0, 0.3],
+                    jit_compile=self.jit_compile,
                 )
             else:
                 model.compile(
-                    optimizer=tf.keras.optimizers.Adam(
-                        learning_rate=self.learning_rate),
+                    optimizer=optimizer,
                     loss=_multi_res_l1,
+                    jit_compile=self.jit_compile,
                 )
             cond_unet.summary(print_fn=logging.info)
             logging.info(f"Training model parameters: {model.count_params():,}")
             logging.info(f"Detection head: {self.with_detection_head}")
+            logging.info(f"Mixed precision: "
+                         f"{tf.keras.mixed_precision.global_policy().name}")
+            logging.info(f"XLA (jit_compile): {self.jit_compile}")
+            logging.info(f"Batch size: {self.batch_size}")
 
             history = model.fit(
                 train_ds,
@@ -323,6 +352,10 @@ class ConditionedSeparatorTrainer:
                         "num_classes": len(class_names),
                         "negative_prob": self.negative_prob,
                         "with_detection_head": self.with_detection_head,
+                        "batch_size": self.batch_size,
+                        "jit_compile": self.jit_compile,
+                        "mixed_precision":
+                            tf.keras.mixed_precision.global_policy().name,
                     },
                     output=_log_buf.getvalue(),
                 )
@@ -354,10 +387,32 @@ if __name__ == "__main__":
     is_v25 = version == "v2.5"
     is_v26 = version == "v2.6"
 
+    # --- Speed knobs (safe defaults, override via env without code edits) ---
+    # Mixed precision (float16): 1.5-2x faster on Tensor Core GPUs (T4/A100/L4)
+    # and halves activation memory. Output layers + loss are pinned to float32
+    # (see conditioned_separator.py / apply_mask) so accuracy is unaffected.
+    # Disable with SNC_MIXED_PRECISION=0 if you ever see NaN/inf losses.
+    if os.environ.get("SNC_MIXED_PRECISION", "1") == "1":
+        try:
+            tf.keras.mixed_precision.set_global_policy("mixed_float16")
+            logging.info("Mixed precision enabled: mixed_float16 "
+                         "(set SNC_MIXED_PRECISION=0 to disable).")
+        except Exception as exc:  # noqa: BLE001
+            logging.warning(f"Mixed precision unavailable, using float32: {exc}")
+
+    # Larger batch keeps a fast GPU busy. 32 is safe on T4 (16 GB) with mixed
+    # precision; push SNC_BATCH_SIZE=64 on an A100/L4 (40+ GB).
+    batch_size = int(os.environ.get("SNC_BATCH_SIZE", "32"))
+
+    # XLA fuses the training step. Big win on A100/L4, helps on T4 too. If it
+    # ever fails to compile an op, set SNC_XLA=0 (fails fast at step 1).
+    use_xla = os.environ.get("SNC_XLA", "1") == "1"
+
     ConditionedSeparatorTrainer(
         data_root=cfg.DATA_ROOT,
         model_save_dir=cfg.MODELS_DIR,
         model_version=version,
+        batch_size=batch_size,
         negative_prob=0.25 if (is_v25 or is_v26) else 0.15,
         over_firing_classes=(
             _V26_OVER_FIRING if is_v26 else
@@ -365,4 +420,5 @@ if __name__ == "__main__":
         ),
         over_firing_weight=3.0,
         with_detection_head=is_v26,
+        jit_compile=use_xla,
     ).train()

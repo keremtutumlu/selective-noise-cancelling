@@ -330,12 +330,22 @@ if __name__ == "__main__":
     else:  # auto
         allowed = cfg.load_detect_allowlist(args.version)
 
-    evaluate(
-        model_path=model_path,
-        data_root=cfg.DATA_ROOT,
-        allowed=allowed,
-        absolute_floor=args.absolute_floor,
-        relative_cap=args.relative_cap,
-        top_k=args.top_k,
-        version=args.version or cfg.model_version(),
-    )
+    _version = args.version or cfg.model_version()
+    try:
+        evaluate(
+            model_path=model_path,
+            data_root=cfg.DATA_ROOT,
+            allowed=allowed,
+            absolute_floor=args.absolute_floor,
+            relative_cap=args.relative_cap,
+            top_k=args.top_k,
+            version=_version,
+        )
+    except Exception as exc:
+        cfg.log_drive_run(
+            script="evaluate_detection",
+            version=_version,
+            metrics={"error_type": type(exc).__name__, "error": str(exc)[:500]},
+            notes=f"FAILED: {type(exc).__name__}",
+        )
+        raise

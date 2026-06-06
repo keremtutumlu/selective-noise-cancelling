@@ -156,11 +156,14 @@ class ConditionedSeparatorTrainer:
         if self.with_detection_head:
             # Derive a presence label from the target stem: 1.0 if the
             # queried class is present, 0.0 for negative examples.
+            # IMPORTANT: return a tuple (not a list) so tf.data treats the
+            # two tensors as a nested structure instead of packing them into
+            # a single tensor (which would fail because their shapes differ).
             def _add_presence(inputs, target_mag):
                 presence = tf.expand_dims(
                     tf.cast(tf.reduce_max(tf.abs(target_mag)) > 1e-6,
                             tf.float32), 0)
-                return inputs, [target_mag, presence]
+                return inputs, (target_mag, presence)
             train_ds = (base_ds
                         .map(_add_presence, num_parallel_calls=tf.data.AUTOTUNE)
                         .batch(self.batch_size)
@@ -183,9 +186,10 @@ class ConditionedSeparatorTrainer:
             val_presence = (
                 np.max(np.abs(val_target), axis=(1, 2, 3)) > 1e-6
             ).astype(np.float32)[:, np.newaxis]
+            # Tuple, not list — matches the generator's (target_mag, presence) structure.
             validation_data = (
                 [val_log, val_query, val_lin],
-                [val_target, val_presence],
+                (val_target, val_presence),
             )
         else:
             validation_data = ([val_log, val_query, val_lin], val_target)
@@ -232,32 +236,7 @@ class ConditionedSeparatorTrainer:
         ]
 
     def train(self) -> Model:
-        train_ds, validation_data, class_names = self._datasets()
-        logging.info(f"Training on {len(class_names)} classes: {class_names}")
-
-        # Persist the class list so the evaluator and application can build
-        # the one-hot query without re-reading the dataset.
-        with self.classes_path.open("w") as f:
-            json.dump(class_names, f, indent=2)
-        logging.info(f"Saved class names to {self.classes_path}")
-
-        model, cond_unet = self._build_training_model(len(class_names))
-        if self.with_detection_head:
-            model.compile(
-                optimizer=tf.keras.optimizers.Adam(learning_rate=self.learning_rate),
-                loss=[_multi_res_l1, "binary_crossentropy"],
-                loss_weights=[1.0, 0.3],
-            )
-        else:
-            model.compile(
-                optimizer=tf.keras.optimizers.Adam(learning_rate=self.learning_rate),
-                loss=_multi_res_l1,
-            )
-        cond_unet.summary(print_fn=logging.info)
-        logging.info(f"Training model parameters: {model.count_params():,}")
-        logging.info(f"Detection head: {self.with_detection_head}")
-
-        # Capture all stdout for the Drive log (tee to sys.stdout too).
+        # Tee stdout to a buffer for Drive logging (captures model.fit progress).
         _log_buf = io.StringIO()
         _orig_stdout = sys.stdout
 
@@ -269,7 +248,37 @@ class ConditionedSeparatorTrainer:
                 _orig_stdout.flush()
 
         sys.stdout = _Tee()
+        _error: Optional[Exception] = None
+        history = None
+        class_names: list = []
         try:
+            train_ds, validation_data, class_names = self._datasets()
+            logging.info(f"Training on {len(class_names)} classes: {class_names}")
+
+            # Persist the class list so the evaluator and application can build
+            # the one-hot query without re-reading the dataset.
+            with self.classes_path.open("w") as f:
+                json.dump(class_names, f, indent=2)
+            logging.info(f"Saved class names to {self.classes_path}")
+
+            model, cond_unet = self._build_training_model(len(class_names))
+            if self.with_detection_head:
+                model.compile(
+                    optimizer=tf.keras.optimizers.Adam(
+                        learning_rate=self.learning_rate),
+                    loss=[_multi_res_l1, "binary_crossentropy"],
+                    loss_weights=[1.0, 0.3],
+                )
+            else:
+                model.compile(
+                    optimizer=tf.keras.optimizers.Adam(
+                        learning_rate=self.learning_rate),
+                    loss=_multi_res_l1,
+                )
+            cond_unet.summary(print_fn=logging.info)
+            logging.info(f"Training model parameters: {model.count_params():,}")
+            logging.info(f"Detection head: {self.with_detection_head}")
+
             history = model.fit(
                 train_ds,
                 steps_per_epoch=self.steps_per_epoch,
@@ -278,29 +287,45 @@ class ConditionedSeparatorTrainer:
                 callbacks=self._callbacks(),
                 verbose=2,
             )
+            logging.info(f"Best model saved to {self.checkpoint_path}")
+            return model
+
+        except Exception as exc:
+            _error = exc
+            raise
+
         finally:
             sys.stdout = _orig_stdout
-
-        logging.info(f"Best model saved to {self.checkpoint_path}")
-
-        # Compute final val metrics for the Drive log.
-        hist = history.history
-        best_epoch = int(np.argmin(hist.get("val_loss", [0])))
-        metrics = {
-            "val_loss_best": float(min(hist.get("val_loss", [0]))),
-            "best_epoch": best_epoch + 1,
-            "epochs_trained": len(hist.get("val_loss", [])),
-            "num_classes": len(class_names),
-            "negative_prob": self.negative_prob,
-            "with_detection_head": self.with_detection_head,
-        }
-        cfg.log_drive_run(
-            script="train_conditioned_separator",
-            version=self.model_version,
-            metrics=metrics,
-            output=_log_buf.getvalue(),
-        )
-        return model
+            # Write a Drive log entry regardless of success or failure.
+            if _error is not None:
+                cfg.log_drive_run(
+                    script="train_conditioned_separator",
+                    version=self.model_version,
+                    metrics={
+                        "error_type": type(_error).__name__,
+                        "error": str(_error)[:500],
+                        "num_classes": len(class_names),
+                        "with_detection_head": self.with_detection_head,
+                    },
+                    output=_log_buf.getvalue(),
+                    notes=f"FAILED: {type(_error).__name__}",
+                )
+            elif history is not None:
+                hist = history.history
+                best_epoch = int(np.argmin(hist.get("val_loss", [0])))
+                cfg.log_drive_run(
+                    script="train_conditioned_separator",
+                    version=self.model_version,
+                    metrics={
+                        "val_loss_best": float(min(hist.get("val_loss", [0]))),
+                        "best_epoch": best_epoch + 1,
+                        "epochs_trained": len(hist.get("val_loss", [])),
+                        "num_classes": len(class_names),
+                        "negative_prob": self.negative_prob,
+                        "with_detection_head": self.with_detection_head,
+                    },
+                    output=_log_buf.getvalue(),
+                )
 
 
 if __name__ == "__main__":

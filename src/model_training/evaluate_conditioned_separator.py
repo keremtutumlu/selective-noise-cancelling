@@ -203,7 +203,17 @@ if __name__ == "__main__":
              f"Default: {cfg.model_version()}.")
     args = parser.parse_args()
 
-    ConditionedSeparatorEvaluator(
-        data_root=cfg.DATA_ROOT,
-        model_path=cfg.model_path(args.version),
-    ).evaluate()
+    _model_path = cfg.model_path(args.version)
+    try:
+        ConditionedSeparatorEvaluator(
+            data_root=cfg.DATA_ROOT,
+            model_path=_model_path,
+        ).evaluate()
+    except Exception as exc:
+        cfg.log_drive_run(
+            script="evaluate_conditioned_separator",
+            version=str(_model_path.stem),
+            metrics={"error_type": type(exc).__name__, "error": str(exc)[:500]},
+            notes=f"FAILED: {type(exc).__name__}",
+        )
+        raise

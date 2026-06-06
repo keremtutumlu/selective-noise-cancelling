@@ -270,6 +270,10 @@ class ConditionedSeparatorTrainer:
                 _log_buf.write(s)
             def flush(self):
                 _orig_stdout.flush()
+            def fileno(self):
+                return _orig_stdout.fileno()
+            def isatty(self):
+                return _orig_stdout.isatty()
 
         sys.stdout = _Tee()
         _error: Optional[Exception] = None

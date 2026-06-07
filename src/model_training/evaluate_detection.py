@@ -182,8 +182,25 @@ def evaluate(model_path: Path, data_root: Path, n_test: int = 200,
         print("Detection allow-list: none (scoring over full vocabulary).\n")
     else:
         allowed = [c for c in allowed if c in model_set]
-        print(f"Detection allow-list: {len(allowed)} classes "
-              f"(only these can be surfaced).\n")
+        # Defensive intersection with the locally-available classes: an
+        # allow-list written in a different environment (e.g. training with
+        # FSD50K loaded, eval without) is stale, and the on-disk entries we
+        # cannot validate here can only ever be false positives. Drop them
+        # at eval time so the F1 reflects classes we actually test.
+        available_set = set(available)
+        before = len(allowed)
+        unvalidatable = sorted(c for c in allowed if c not in available_set)
+        allowed = [c for c in allowed if c in available_set]
+        if unvalidatable:
+            print(f"Detection allow-list: {before} on disk → "
+                  f"{len(allowed)} after intersecting with locally-available "
+                  f"audio.")
+            preview = ", ".join(unvalidatable[:8])
+            tail = "" if len(unvalidatable) <= 8 else f" (+{len(unvalidatable) - 8} more)"
+            print(f"  Dropped {len(unvalidatable)} unvalidatable: {preview}{tail}\n")
+        else:
+            print(f"Detection allow-list: {len(allowed)} classes "
+                  f"(only these can be surfaced).\n")
 
     tp = defaultdict(int)
     fp = defaultdict(int)
@@ -275,10 +292,19 @@ def _local_classes(data_root: Path, model_classes: list) -> list:
     This is the natural allow-list: detection should only surface classes we
     have ground-truth audio for, so classes that exist only in the model's
     vocabulary (e.g. FSD50K-only labels) cannot become false positives.
+
+    The result reflects the **current** environment: if a dataset is missing
+    at write-time it will not appear in the file. Re-run ``--write-allowlist``
+    after changing the data setup so the file matches what is actually
+    decodable.
     """
     mixer = SeparationMixer(data_root, negative_prob=0.0, seed=0)
     model_set = set(model_classes)
-    return [c for c in mixer.class_names if c in model_set]
+    local = [c for c in mixer.class_names if c in model_set]
+    print(f"  allow-list build: mixer sees {len(mixer.class_names)} classes, "
+          f"model knows {len(model_classes)}, "
+          f"intersection = {len(local)} validatable classes.")
+    return local
 
 
 if __name__ == "__main__":

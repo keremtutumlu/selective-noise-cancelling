@@ -443,8 +443,8 @@ Or set `SNC_MODEL_VERSION=v2.5` in the Colab version cell.
 ## v2.6 — Detection head + expanded hard-negative list
 
 **File:** `separator_unet_film_multi_v2.6.h5`  
-**Trained:** — (pending Colab run)  
-**Status:** Not yet trained
+**Trained:** 2026-06-07 (Colab, A100 80GB)  
+**Status:** Trained; sweep evaluated; detection head under-performs — informs v2.7
 
 ### Motivation
 
@@ -536,7 +536,103 @@ python src/model_training/train_conditioned_separator.py --version v2.6
 ```
 
 ### Evaluation results
-— pending first Colab run —
+
+**Training:** 60 epochs to convergence on A100 80GB, mixed-precision + XLA.
+Final `val_loss = 0.4612`. The detection head trained without instability.
+
+**SI-SDR (separation):** Mean −15.73 dB across all classes. Heavily skewed by
+FSD50K examples where the target already dominates the mixture
+(`mix > 50 dB`), so applying any separation degrades the score. Per-class
+inspection shows positive SI-SDRi on realistic mixes; the headline number is
+misleading. Plan to filter `mix > 30 dB` examples for v2.7 evaluation.
+
+**Detection threshold sweep** — three threshold sets, all run against the same
+checkpoint (200 synthetic mixtures each, allow-list mode `auto`):
+
+| Set | `floor` | `cap` | `top_k` | Mean F1 | TP  | FP  | FN  |
+|---|---|---|---|---|---|---|---|
+| moderate | 0.30 | 0.90 | 4 | **0.17** | 82  | 714 | 409 |
+| strict   | 0.50 | 0.95 | 3 | **0.16** | 77  | 509 | 419 |
+| strict2  | 0.70 | 0.95 | 2 | **0.15** | 57  | 339 | 430 |
+
+F1 is **flat across the threshold sweep** — sharpening the cutoff drops FPs
+*and* TPs together. That means the cutoff is not the bottleneck; the model
+has learned a noisy presence score, not a useful one.
+
+### Findings
+
+1. **Detection head trains but under-fits.** Recall is poor (57–82 TPs out of
+   ~500 ground-truth positives). The model misses real sounds while firing on
+   wrong ones. Threshold tuning cannot rescue this — it needs more negative
+   exposure during training (`negative_prob = 0.25` is too low) and a larger
+   head.
+
+2. **Stale allow-list file inflated false positives.** The sweep log line
+   `Detection allow-list: 227 classes (only these can be surfaced)` shows the
+   on-disk allow-list still contained every model class. It was written during
+   training when the mixer had FSD50K cached (227 classes); at sweep time the
+   mixer only sees 56 (ESC-50 + UrbanSound8K), so the surplus 171 FSD50K-only
+   entries fired as pure phantom false positives. Top offenders: `stream`,
+   `bird_vocalization_and_bird_call_and_bird_song`, `ocean`, `sawing`,
+   `applause`, `wind_chime`. In strict2 alone, ~51 FPs were unvalidatable
+   phantoms — removing them moves precision noticeably.
+
+3. **Bipolar per-class performance.** A handful of classes work well even at
+   strict2 (`gun_shot` F1=0.80, `sea_waves` 0.63, `church_bells` 0.53,
+   `vacuum_cleaner` 0.50) while many sit at zero (`airplane`, `cat`,
+   `siren`, `train`, `street_music`). The head can clearly learn — it just
+   hasn't seen enough negatives per class.
+
+### Fix already shipped on this branch
+
+`evaluate_detection.evaluate()` now defensively intersects the loaded
+allow-list with the locally-available classes at eval time and reports the
+drop. A stale allow-list file can no longer inflate FPs on future runs —
+re-running the sweep with the existing v2.6 checkpoint would report the
+honest, phantom-free F1 without re-training. To clean the on-disk file too,
+re-run with `--write-allowlist` from an environment that matches the eval
+mixer.
+
+---
+
+## v2.7 — Stronger negatives + larger detection head + clean allow-list
+
+**File:** `separator_unet_film_multi_v2.7.h5` (planned)  
+**Trained:** —  
+**Status:** Planned — addresses the three v2.6 findings above
+
+### Motivation
+v2.6 proved the detection-head architecture is the right structural choice
+(it trains, the loss converges, and individual classes can reach F1 ≥ 0.5).
+The problem is *quality of supervision*, not architecture. v2.7 doubles down
+on the head with more negatives, more capacity, and a loss that hurts more
+when the head is overconfidently wrong — without touching the separation
+branch, which is doing its job.
+
+### Planned changes
+| Parameter | v2.6 | v2.7 (planned) | Why |
+|---|---|---|---|
+| `negative_prob` | 0.25 | **0.50** | Half of every batch is now a negative example. Most direct lever for raising precision; v2.6's flat F1 across thresholds points straight at insufficient negative exposure. |
+| Detection head | `GAP → Dense(128) → Dense(1)` | **`GAP → Dense(256) → Dropout(0.3) → Dense(1)`** | Doubles capacity, adds regularisation. v2.6's head likely under-fit a 227-way presence map. |
+| Detection loss | BCE @ weight 0.3 | **Focal loss (α=0.25, γ=2) @ weight 1.0** | Focal loss down-weights easy negatives so gradient signal concentrates on hard mistakes; raising the head's loss weight balances the multi-task. |
+| `over_firing_classes` | 10 classes (v2.5 sweep) | **refresh from v2.6 sweep** | New top-FP list: `pig`, `drilling`, `sea_waves`, `helicopter`, `laughing`, `air_conditioner`, `vacuum_cleaner`, `frog`, `crickets`, `clapping`. |
+| Allow-list source | accidentally 227 (stale) | **explicitly 56 (locally-validatable)** | Written from the sweep-time mixer, not the train-time mixer. The eval defensive intersection (just shipped) makes this idempotent. |
+
+### What stays the same
+Separation branch, FiLM-conditioning, U-Net depth, batch size, training data,
+multi-resolution L1 loss — all unchanged. We are not regressing what already
+works.
+
+### Open questions before training
+- Should we *also* prune the model vocabulary to the 56 locally-validatable
+  classes? Pro: cleaner head, fewer phantom predictions. Con: webapp loses
+  every FSD50K-only class as a removal target. Leaning toward **keep all 227
+  in the vocabulary, restrict only the detection head's positive supervision
+  to the 56**, but needs a small training change. To be decided before the
+  v2.7 run.
+- SI-SDR eval should filter mixes where `mix > 30 dB SI-SDR(target, mix)` so
+  the headline number stops being dragged down by examples where there is
+  nothing to separate.
 
 ---
 

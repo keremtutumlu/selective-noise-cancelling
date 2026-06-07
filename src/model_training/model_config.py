@@ -133,7 +133,12 @@ def log_drive_run(
     output: str = "",
     notes: str = "",
 ) -> None:
-    """Append a timestamped JSONL run-log entry to the Drive log directory.
+    """Append a timestamped run-log entry to ``run_log.json`` on Drive.
+
+    The file is a single pretty-printed JSON array of entries — readable at
+    a glance, not the line-delimited JSONL format that was hard to scan.
+    Writes are atomic (write to .tmp, then rename) so a crash mid-write
+    never corrupts the log.
 
     Reads ``SNC_DRIVE_LOG_DIR`` from the environment. If the variable is
     unset or the directory does not exist the call is a silent no-op, so
@@ -141,11 +146,6 @@ def log_drive_run(
 
     Colab one-liner (put near the top of the notebook):
         os.environ["SNC_DRIVE_LOG_DIR"] = "/content/drive/MyDrive/snc/run_logs"
-
-    Each entry is a JSON object on a single line::
-
-        {"ts": "2026-06-05T12:00:00+00:00", "script": "train", "version":
-         "v2.6", "metrics": {...}, "output": "...last 4 kB...", "notes": ""}
     """
     log_dir_str = os.environ.get(DRIVE_LOG_ENV, "").strip()
     if not log_dir_str:
@@ -153,7 +153,7 @@ def log_drive_run(
     log_dir = Path(log_dir_str)
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
-        log_path = log_dir / "run_log.jsonl"
+        log_path = log_dir / "run_log.json"
         entry = {
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "script": script,
@@ -163,8 +163,36 @@ def log_drive_run(
             "notes": notes,
             "host": socket.gethostname(),
         }
-        with log_path.open("a") as f:
-            f.write(json.dumps(entry) + "\n")
+        # Load existing entries; tolerate missing or corrupt files by starting
+        # over instead of crashing — the audit log must never block a run.
+        entries: list = []
+        if log_path.exists():
+            try:
+                loaded = json.loads(log_path.read_text())
+                if isinstance(loaded, list):
+                    entries = loaded
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        # One-time migration: if the legacy run_log.jsonl exists, fold its
+        # entries into the new array so the history is not lost.
+        legacy = log_dir / "run_log.jsonl"
+        if not entries and legacy.exists():
+            try:
+                with legacy.open() as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            entries.append(json.loads(line))
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        entries.append(entry)
+        # Atomic write: never leave a half-written log file behind.
+        tmp_path = log_path.with_suffix(".json.tmp")
+        with tmp_path.open("w") as f:
+            json.dump(entries, f, indent=2)
+        tmp_path.replace(log_path)
         print(f"[drive_log] Appended to {log_path}")
     except Exception as exc:  # noqa: BLE001
         print(f"[drive_log] WARNING: could not write to {log_dir}: {exc}")

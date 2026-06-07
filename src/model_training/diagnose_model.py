@@ -82,6 +82,17 @@ def _model_input(waveform):
     return lin, log
 
 
+def _predict_mask(model, log, q, lin):
+    """``model.predict`` returning only the mask, regardless of head count.
+
+    v2.6+ models have a detection head and return ``[mask, class_presence]``;
+    earlier models return just ``mask``. Treat both uniformly so the diagnostic
+    keeps working across versions.
+    """
+    out = model.predict([log[None], q[None], lin[None]], verbose=0)
+    return out[0] if isinstance(out, list) else out
+
+
 def diagnose(model_path: Path, data_root: Path, n_classes: int = 12,
              seed: int = 0) -> dict:
     """Run all three health tests and return a metric dict."""
@@ -111,7 +122,7 @@ def diagnose(model_path: Path, data_root: Path, n_classes: int = 12,
         clip = _clean_clip(mixer, cls)
         lin, log = _model_input(clip)
         q = _query(model_classes, cls)
-        est = model.predict([log[None], q[None], lin[None]], verbose=0)
+        est = _predict_mask(model, log, q, lin)
         inp_max, out_max = float(np.max(lin)), float(np.max(est))
         ratio = out_max / (inp_max + 1e-8)
         ratios.append(ratio)
@@ -130,7 +141,7 @@ def diagnose(model_path: Path, data_root: Path, n_classes: int = 12,
     energies = {}
     for cls in test_classes[:6]:
         q = _query(model_classes, cls)
-        est = model.predict([log[None], q[None], lin[None]], verbose=0)
+        est = _predict_mask(model, log, q, lin)
         energies[cls] = float(np.mean(est ** 2))
     correct_e = energies[test_cls]
     other_e = float(np.mean([v for k, v in energies.items() if k != test_cls]))
@@ -152,14 +163,14 @@ def diagnose(model_path: Path, data_root: Path, n_classes: int = 12,
         clip = _clean_clip(mixer, cls)
         lin, log = _model_input(clip)
         q = _query(model_classes, cls)
-        est = model.predict([log[None], q[None], lin[None]], verbose=0)
+        est = _predict_mask(model, log, q, lin)
         correct_e = float(np.mean(est ** 2))
 
         wrong_classes = [c for c in test_classes if c != cls][:3]
         wrong_es = []
         for wc in wrong_classes:
             qw = _query(model_classes, wc)
-            estw = model.predict([log[None], qw[None], lin[None]], verbose=0)
+            estw = _predict_mask(model, log, qw, lin)
             wrong_es.append(float(np.mean(estw ** 2)))
         wrong_avg = float(np.mean(wrong_es))
         adv = (correct_e - wrong_avg) / (wrong_avg + 1e-9)

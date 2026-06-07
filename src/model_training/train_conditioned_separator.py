@@ -72,6 +72,31 @@ def _multi_res_l1(y_true, y_pred):
     return loss
 
 
+def _focal_loss(alpha: float = 0.25, gamma: float = 2.0):
+    """Binary focal loss for the detection head.
+
+    Standard BCE treats every example equally, so an abundance of easy
+    negatives drowns out the gradient signal from the few hard positives the
+    head still gets wrong. Focal loss multiplies the per-example BCE by
+    ``alpha_t * (1 - p_t)^gamma`` so well-classified examples contribute
+    little and hard cases dominate the update. ``alpha=0.25, gamma=2`` are
+    the values from the original RetinaNet paper; they work well as a
+    drop-in BCE replacement when one class (here: "absent") dominates.
+
+    Returns a closure compatible with ``model.compile(loss=...)``.
+    """
+    def loss_fn(y_true, y_pred):
+        eps = 1e-7
+        y_pred = tf.clip_by_value(y_pred, eps, 1.0 - eps)
+        bce = -(y_true * tf.math.log(y_pred)
+                + (1.0 - y_true) * tf.math.log(1.0 - y_pred))
+        p_t = y_true * y_pred + (1.0 - y_true) * (1.0 - y_pred)
+        alpha_t = y_true * alpha + (1.0 - y_true) * (1.0 - alpha)
+        return tf.reduce_mean(alpha_t * tf.pow(1.0 - p_t, gamma) * bce)
+    loss_fn.__name__ = f"focal_loss_a{alpha}_g{gamma}"
+    return loss_fn
+
+
 class ConditionedSeparatorTrainer:
     """Trains the query-conditioned separator on on-the-fly mixtures."""
 
@@ -97,6 +122,10 @@ class ConditionedSeparatorTrainer:
         over_firing_classes: Optional[List[str]] = None,
         over_firing_weight: float = 3.0,
         with_detection_head: bool = False,
+        detection_head_dim: int = 128,
+        detection_head_dropout: float = 0.0,
+        detection_loss_weight: float = 0.3,
+        detection_use_focal: bool = False,
         jit_compile: bool = False,
     ):
         self.data_root = data_root
@@ -118,6 +147,10 @@ class ConditionedSeparatorTrainer:
         self.over_firing_classes = over_firing_classes
         self.over_firing_weight = over_firing_weight
         self.with_detection_head = with_detection_head
+        self.detection_head_dim = detection_head_dim
+        self.detection_head_dropout = detection_head_dropout
+        self.detection_loss_weight = detection_loss_weight
+        self.detection_use_focal = detection_use_focal
         self.jit_compile = jit_compile
 
         self.model_save_dir.mkdir(parents=True, exist_ok=True)
@@ -206,6 +239,8 @@ class ConditionedSeparatorTrainer:
             num_classes=num_classes,
             base_filters=self.base_filters,
             with_detection_head=self.with_detection_head,
+            detection_head_dim=self.detection_head_dim,
+            detection_head_dropout=self.detection_head_dropout,
         )
         log_in = Input(shape=(FREQ_BINS, TIME_FRAMES, 1), name="log_magnitude")
         query_in = Input(shape=(num_classes,), name="class_query")
@@ -292,12 +327,21 @@ class ConditionedSeparatorTrainer:
             model, cond_unet = self._build_training_model(len(class_names))
             optimizer = self._make_optimizer()
             if self.with_detection_head:
+                det_loss = (_focal_loss(0.25, 2.0)
+                            if self.detection_use_focal
+                            else "binary_crossentropy")
                 model.compile(
                     optimizer=optimizer,
-                    loss=[_multi_res_l1, "binary_crossentropy"],
-                    loss_weights=[1.0, 0.3],
+                    loss=[_multi_res_l1, det_loss],
+                    loss_weights=[1.0, self.detection_loss_weight],
                     jit_compile=self.jit_compile,
                 )
+                logging.info(
+                    f"Detection loss: "
+                    f"{'focal(0.25, 2.0)' if self.detection_use_focal else 'BCE'} "
+                    f"@ weight {self.detection_loss_weight}, head dim "
+                    f"{self.detection_head_dim}, dropout "
+                    f"{self.detection_head_dropout}.")
             else:
                 model.compile(
                     optimizer=optimizer,
@@ -356,6 +400,10 @@ class ConditionedSeparatorTrainer:
                         "num_classes": len(class_names),
                         "negative_prob": self.negative_prob,
                         "with_detection_head": self.with_detection_head,
+                        "detection_head_dim": self.detection_head_dim,
+                        "detection_head_dropout": self.detection_head_dropout,
+                        "detection_loss_weight": self.detection_loss_weight,
+                        "detection_use_focal": self.detection_use_focal,
                         "batch_size": self.batch_size,
                         "jit_compile": self.jit_compile,
                         "mixed_precision":
@@ -387,9 +435,18 @@ if __name__ == "__main__":
         "door_wood_knock", "street_music", "rooster", "train",
         "airplane", "cat",
     ]
+    # v2.7: refreshed FP list from the v2.6 detection sweep (see
+    # docs/model_training_log.md). v2.7 also doubles negative_prob, enlarges
+    # the detection head with dropout, and swaps BCE for focal loss so the
+    # head stops being drowned by easy negatives.
+    _V27_OVER_FIRING = [
+        "pig", "drilling", "sea_waves", "helicopter", "laughing",
+        "air_conditioner", "vacuum_cleaner", "frog", "crickets", "clapping",
+    ]
 
     is_v25 = version == "v2.5"
     is_v26 = version == "v2.6"
+    is_v27 = version == "v2.7"
 
     # --- Speed knobs (safe defaults, override via env without code edits) ---
     # Mixed precision (float16): 1.5-2x faster on Tensor Core GPUs (T4/A100/L4)
@@ -417,12 +474,18 @@ if __name__ == "__main__":
         model_save_dir=cfg.MODELS_DIR,
         model_version=version,
         batch_size=batch_size,
-        negative_prob=0.25 if (is_v25 or is_v26) else 0.15,
+        negative_prob=(0.50 if is_v27 else
+                       0.25 if (is_v25 or is_v26) else 0.15),
         over_firing_classes=(
+            _V27_OVER_FIRING if is_v27 else
             _V26_OVER_FIRING if is_v26 else
             _V25_OVER_FIRING if is_v25 else None
         ),
         over_firing_weight=3.0,
-        with_detection_head=is_v26,
+        with_detection_head=(is_v26 or is_v27),
+        detection_head_dim=256 if is_v27 else 128,
+        detection_head_dropout=0.3 if is_v27 else 0.0,
+        detection_loss_weight=1.0 if is_v27 else 0.3,
+        detection_use_focal=is_v27,
         jit_compile=use_xla,
     ).train()

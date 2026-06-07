@@ -44,6 +44,7 @@ from tensorflow.keras.layers import (
     Conv2D,
     Conv2DTranspose,
     Dense,
+    Dropout,
     GlobalAveragePooling2D,
     Input,
     MaxPooling2D,
@@ -77,6 +78,8 @@ def build_conditioned_separator(
     base_filters: int = 32,
     embed_dim: int = 128,
     with_detection_head: bool = False,
+    detection_head_dim: int = 128,
+    detection_head_dropout: float = 0.0,
 ) -> Model:
     """
     Build the query-conditioned separation U-Net.
@@ -149,9 +152,15 @@ def build_conditioned_separator(
         # Detection head: bottleneck is already FiLM-conditioned on the class
         # query, so GlobalAveragePooling2D collapses it to a class-aware vector.
         # Dense(1, sigmoid) then predicts P(queried class present | mixture).
+        # ``detection_head_dim``/``detection_head_dropout`` let later versions
+        # scale up the head without changing the rest of the architecture
+        # (v2.6 used 128/0.0 — keep those as defaults for reproducibility).
         det = GlobalAveragePooling2D(name="det_pool")(bottleneck)
-        det = Dense(128, activation="relu", name="det_dense")(det)
-        # float32 output for stable binary cross-entropy under mixed precision.
+        det = Dense(detection_head_dim, activation="relu", name="det_dense")(det)
+        if detection_head_dropout > 0:
+            det = Dropout(detection_head_dropout, name="det_dropout")(det)
+        # float32 output for stable binary cross-entropy / focal loss under
+        # mixed precision.
         class_presence = Dense(1, activation="sigmoid",
                                name="class_presence", dtype="float32")(det)
         return Model([log_mag, query], [mask, class_presence],

@@ -436,17 +436,22 @@ if __name__ == "__main__":
         "airplane", "cat",
     ]
     # v2.7: refreshed FP list from the v2.6 detection sweep (see
-    # docs/model_training_log.md). v2.7 also doubles negative_prob, enlarges
-    # the detection head with dropout, and swaps BCE for focal loss so the
-    # head stops being drowned by easy negatives.
+    # docs/model_training_log.md). v2.7 doubled negative_prob and swapped BCE
+    # for focal loss — but focal loss at weight 1.0 produced values ~0.07
+    # (vs BCE ~0.46), effective gradient 10x too small → head barely trained.
     _V27_OVER_FIRING = [
         "pig", "drilling", "sea_waves", "helicopter", "laughing",
         "air_conditioner", "vacuum_cleaner", "frog", "crickets", "clapping",
     ]
+    # v2.8: reverts detection loss to BCE (no focal-loss scaling problem),
+    # raises loss weight to 0.5, keeps negative_prob=0.50 and v2.7's FP list.
+    # Detection head stays at dim=128/dropout=0 (v2.6 values worked fine).
+    _V28_OVER_FIRING = _V27_OVER_FIRING
 
     is_v25 = version == "v2.5"
     is_v26 = version == "v2.6"
     is_v27 = version == "v2.7"
+    is_v28 = version == "v2.8"
 
     # --- Speed knobs (safe defaults, override via env without code edits) ---
     # Mixed precision (float16): 1.5-2x faster on Tensor Core GPUs (T4/A100/L4)
@@ -474,18 +479,20 @@ if __name__ == "__main__":
         model_save_dir=cfg.MODELS_DIR,
         model_version=version,
         batch_size=batch_size,
-        negative_prob=(0.50 if is_v27 else
+        negative_prob=(0.50 if (is_v27 or is_v28) else
                        0.25 if (is_v25 or is_v26) else 0.15),
         over_firing_classes=(
+            _V28_OVER_FIRING if is_v28 else
             _V27_OVER_FIRING if is_v27 else
             _V26_OVER_FIRING if is_v26 else
             _V25_OVER_FIRING if is_v25 else None
         ),
         over_firing_weight=3.0,
-        with_detection_head=(is_v26 or is_v27),
+        with_detection_head=(is_v26 or is_v27 or is_v28),
         detection_head_dim=256 if is_v27 else 128,
         detection_head_dropout=0.3 if is_v27 else 0.0,
-        detection_loss_weight=1.0 if is_v27 else 0.3,
+        detection_loss_weight=(1.0 if is_v27 else
+                               0.5 if is_v28 else 0.3),
         detection_use_focal=is_v27,
         jit_compile=use_xla,
     ).train()

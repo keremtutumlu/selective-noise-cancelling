@@ -151,6 +151,25 @@ def load_fsd50k(root_dir: Path, target_sr: int = 16000,
 _CACHE_VERSION = 1
 
 
+def _dataset_tag(data_root: Path) -> str:
+    """Short id for which datasets exist under ``data_root`` (e.g. ``esc-us8k``).
+
+    The decoded cache's *contents* depend on which datasets are present, but
+    the per-config filename only captured sample rate and the clip floor. So a
+    56-class ESC-50+UrbanSound8K cache and a 227-class run that also has FSD50K
+    shared one filename — fetching either from Drive could load the wrong one.
+    Encoding the present datasets keeps the two caches distinct.
+    """
+    tags = []
+    if (data_root / "archive" / "esc50.csv").exists():
+        tags.append("esc")
+    if (data_root / "urbansound8k" / "metadata" / "UrbanSound8K.csv").exists():
+        tags.append("us8k")
+    if (data_root / "fsd50k" / "FSD50K.ground_truth" / "dev.csv").exists():
+        tags.append("fsd")
+    return "-".join(tags) if tags else "none"
+
+
 def _cache_file(data_root: Path, target_sr: int, min_clips_per_class: int) -> Path:
     """Per-config cache path. Any parameter that changes the merged result is
     encoded in the filename so a different config never reads a stale cache.
@@ -163,7 +182,8 @@ def _cache_file(data_root: Path, target_sr: int, min_clips_per_class: int) -> Pa
     cache_dir = Path(os.environ.get("SNC_DATA_CACHE_DIR", str(data_root)))
     cache_dir.mkdir(parents=True, exist_ok=True)
     return (cache_dir / f"_decoded_cache_v{_CACHE_VERSION}"
-            f"_sr{target_sr}_min{min_clips_per_class}.pkl")
+            f"_sr{target_sr}_min{min_clips_per_class}"
+            f"_{_dataset_tag(data_root)}.pkl")
 
 
 def _maybe_fetch_cache_from_drive(cache_path: Path) -> None:

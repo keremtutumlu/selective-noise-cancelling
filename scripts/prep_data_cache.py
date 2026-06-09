@@ -74,10 +74,29 @@ DEFAULT_TARGET_SR = 16000
 DEFAULT_MIN_CLIPS = 40
 
 
+def _dataset_tag(data_root: Path) -> str:
+    """Which datasets exist under ``data_root`` (e.g. ``esc-us8k``).
+
+    Mirror of ``dataset_sources._dataset_tag`` (kept inline so ``--info`` stays
+    zero-dep). The cache contents depend on which datasets are present, so the
+    tag is part of the filename — an ESC-50+UrbanSound8K cache never gets
+    confused with one that also has FSD50K.
+    """
+    tags = []
+    if (data_root / "archive" / "esc50.csv").exists():
+        tags.append("esc")
+    if (data_root / "urbansound8k" / "metadata" / "UrbanSound8K.csv").exists():
+        tags.append("us8k")
+    if (data_root / "fsd50k" / "FSD50K.ground_truth" / "dev.csv").exists():
+        tags.append("fsd")
+    return "-".join(tags) if tags else "none"
+
+
 def _cache_name(version: int = DEFAULT_CACHE_VERSION,
                 target_sr: int = DEFAULT_TARGET_SR,
-                min_clips: int = DEFAULT_MIN_CLIPS) -> str:
-    return f"_decoded_cache_v{version}_sr{target_sr}_min{min_clips}.pkl"
+                min_clips: int = DEFAULT_MIN_CLIPS,
+                tag: str = "esc-us8k-fsd") -> str:
+    return f"_decoded_cache_v{version}_sr{target_sr}_min{min_clips}_{tag}.pkl"
 
 
 def _human(nbytes: int) -> str:
@@ -149,7 +168,8 @@ def _build(local_cache: Path, target_sr: int, min_clips: int) -> Path:
     print(f"[prep] decode finished in {elapsed/60:.1f} min", flush=True)
 
     cache_file = local_cache / _cache_name(DEFAULT_CACHE_VERSION,
-                                           target_sr, min_clips)
+                                           target_sr, min_clips,
+                                           _dataset_tag(DATA_ROOT))
     if not cache_file.exists():
         raise RuntimeError(
             f"Decode completed but expected cache file {cache_file} is "
@@ -195,7 +215,7 @@ def main() -> None:
         return
 
     cache_name = _cache_name(DEFAULT_CACHE_VERSION, args.target_sr,
-                             args.min_clips)
+                             args.min_clips, _dataset_tag(DATA_ROOT))
     drive_file = drive_cache / cache_name
     local_file = local_cache / cache_name
 

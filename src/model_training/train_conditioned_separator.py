@@ -160,7 +160,7 @@ class ConditionedSeparatorTrainer:
 
         tf.keras.utils.set_random_seed(seed)
 
-    def _mixer(self, seed_offset: int = 0) -> SeparationMixer:
+    def _mixer(self, seed_offset: int = 0, waveform_cache=None) -> SeparationMixer:
         return SeparationMixer(
             self.data_root,
             max_mix=self.max_mix,
@@ -171,12 +171,17 @@ class ConditionedSeparatorTrainer:
             over_firing_classes=self.over_firing_classes,
             over_firing_weight=self.over_firing_weight,
             seed=self.seed + seed_offset,
+            waveform_cache=waveform_cache,
         )
 
     def _datasets(self) -> Tuple[tf.data.Dataset, tuple, list]:
         """Build the streaming train set and a fixed validation set."""
+        # Decode/load the clip cache once; every parallel generator and the
+        # validation mixer reuse this same in-memory dict, so N data workers
+        # cost N threads rather than N copies of the multi-GB dataset.
         train_mixer = self._mixer(0)
-        val_mixer = self._mixer(1)
+        shared_cache = train_mixer._waveform_cache
+        val_mixer = self._mixer(1, waveform_cache=shared_cache)
         num_classes = train_mixer.num_classes
 
         spec_shape = (FREQ_BINS, TIME_FRAMES, 1)
@@ -186,8 +191,27 @@ class ConditionedSeparatorTrainer:
              tf.TensorSpec(spec_shape, tf.float32)),
             tf.TensorSpec(spec_shape, tf.float32),
         )
-        base_ds = tf.data.Dataset.from_generator(
-            train_mixer.generate, output_signature=output_signature)
+
+        # A single-threaded Python generator running two librosa STFTs per
+        # example was starving the GPU (~100 ms/step on an A100 for an 8 M-param
+        # net that should run in ~20 ms). Interleave several independent mixers
+        # across worker threads so the input pipeline stays ahead of the device.
+        # Each worker uses a distinct seed (offset 100+i, clear of the cache
+        # loader at 0 and the validation mixer at 1) and the shared clip cache.
+        # Tune with SNC_DATA_PARALLEL (default 4).
+        n_parallel = max(1, int(os.environ.get("SNC_DATA_PARALLEL", "4")))
+
+        def _gen_factory(offset):
+            mixer = self._mixer(100 + int(offset), waveform_cache=shared_cache)
+            yield from mixer.generate()
+
+        base_ds = tf.data.Dataset.range(n_parallel).interleave(
+            lambda i: tf.data.Dataset.from_generator(
+                _gen_factory, output_signature=output_signature, args=(i,)),
+            cycle_length=n_parallel,
+            num_parallel_calls=tf.data.AUTOTUNE,
+            deterministic=False,
+        )
 
         if self.with_detection_head:
             # Derive a presence label from the target stem: 1.0 if the

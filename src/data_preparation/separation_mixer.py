@@ -66,6 +66,7 @@ class SeparationMixer:
         over_firing_classes: Optional[List[str]] = None,
         over_firing_weight: float = 3.0,
         seed: int = 42,
+        waveform_cache: Optional[Dict[str, List[np.ndarray]]] = None,
     ):
         self.target_sr = target_sr
         self.window_length = target_sr  # 1 second
@@ -82,8 +83,16 @@ class SeparationMixer:
         # Merge every dataset found under data_root into one clip cache.
         # Under-supported classes (the FSD50K long tail) are pruned by
         # min_clips_per_class inside load_all_datasets.
-        self._waveform_cache: Dict[str, List[np.ndarray]] = load_all_datasets(
-            data_root, target_sr, self.min_clips_per_class)
+        #
+        # ``waveform_cache`` lets several mixers share one already-decoded
+        # dict instead of each holding its own ~GB-scale copy. Parallel data
+        # generators (see the trainer's interleave pipeline) use this so the
+        # decoded dataset stays in memory exactly once.
+        if waveform_cache is not None:
+            self._waveform_cache: Dict[str, List[np.ndarray]] = waveform_cache
+        else:
+            self._waveform_cache = load_all_datasets(
+                data_root, target_sr, self.min_clips_per_class)
         self.class_names: List[str] = sorted(self._waveform_cache)
         self.num_classes = len(self.class_names)
 

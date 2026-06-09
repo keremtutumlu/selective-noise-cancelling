@@ -23,6 +23,7 @@ import logging
 import os
 import pickle
 import re
+import shutil
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -165,6 +166,61 @@ def _cache_file(data_root: Path, target_sr: int, min_clips_per_class: int) -> Pa
             f"_sr{target_sr}_min{min_clips_per_class}.pkl")
 
 
+def _maybe_fetch_cache_from_drive(cache_path: Path) -> None:
+    """Pull a Drive-mirrored copy of ``cache_path`` to local SSD if present.
+
+    A fresh Colab container has an empty local SSD, so the decoded-dataset
+    cache is gone even though a copy sits on Drive. Fetching that one large
+    blob (a few GB at sustained throughput) takes under a minute, versus the
+    multi-hour decode of ~50k tiny WAVs it replaces. This makes training and
+    evaluation boot fast on their own — running ``scripts/prep_data_cache.py``
+    first becomes optional rather than required.
+
+    No-op unless ``SNC_DRIVE_CACHE_DIR`` is set and holds a matching file.
+    """
+    drive_dir = os.environ.get("SNC_DRIVE_CACHE_DIR", "").strip()
+    if not drive_dir:
+        return
+    drive_file = Path(drive_dir) / cache_path.name
+    if not drive_file.exists():
+        return
+    try:
+        logging.info(f"Fetching decoded-dataset cache from Drive "
+                     f"({drive_file}, {drive_file.stat().st_size / 1e9:.2f} GB)...")
+        tmp = cache_path.with_suffix(cache_path.suffix + ".part")
+        shutil.copyfile(drive_file, tmp)
+        os.replace(tmp, cache_path)
+        logging.info(f"Cache fetched to {cache_path} — skipped the decode.")
+    except OSError as exc:
+        logging.warning(f"Could not fetch cache from Drive ({exc}); "
+                        f"falling back to decode.")
+
+
+def _maybe_mirror_cache_to_drive(cache_path: Path) -> None:
+    """Copy a freshly built local cache back to Drive for future sessions.
+
+    Pairs with :func:`_maybe_fetch_cache_from_drive`: the first session to
+    decode mirrors the result to Drive, every later session fetches it. No-op
+    unless ``SNC_DRIVE_CACHE_DIR`` is set; the copy is best-effort so a Drive
+    write failure never aborts a successful decode.
+    """
+    drive_dir = os.environ.get("SNC_DRIVE_CACHE_DIR", "").strip()
+    if not drive_dir:
+        return
+    drive_file = Path(drive_dir) / cache_path.name
+    if drive_file.exists() and drive_file.stat().st_size == cache_path.stat().st_size:
+        return
+    try:
+        Path(drive_dir).mkdir(parents=True, exist_ok=True)
+        logging.info(f"Mirroring decoded-dataset cache to Drive ({drive_file})...")
+        tmp = drive_file.with_suffix(drive_file.suffix + ".part")
+        shutil.copyfile(cache_path, tmp)
+        os.replace(tmp, drive_file)
+        logging.info("Cache mirrored — future sessions skip the decode.")
+    except OSError as exc:
+        logging.warning(f"Could not mirror cache to Drive ({exc}).")
+
+
 def load_all_datasets(data_root: Path, target_sr: int = 16000,
                       min_clips_per_class: int = 40,
                       cache: bool = True,
@@ -200,6 +256,11 @@ def load_all_datasets(data_root: Path, target_sr: int = 16000,
     if os.environ.get("SNC_DISABLE_DATA_CACHE") == "1":
         cache = False
     cache_path = cache_path or _cache_file(data_root, target_sr, min_clips_per_class)
+
+    # Cold local SSD (fresh Colab container) but a Drive copy exists: pull it
+    # rather than re-decoding ~50k WAVs. Makes the prep step optional.
+    if cache and not cache_path.exists():
+        _maybe_fetch_cache_from_drive(cache_path)
 
     if cache and cache_path.exists():
         try:
@@ -264,6 +325,8 @@ def load_all_datasets(data_root: Path, target_sr: int = 16000,
             os.replace(tmp, cache_path)
             logging.info(f"Cached decoded dataset to {cache_path.name} "
                          f"(delete to rebuild).")
+            # Mirror the fresh cache to Drive so the next session fetches it.
+            _maybe_mirror_cache_to_drive(cache_path)
         except OSError as exc:
             logging.warning(f"Could not write dataset cache: {exc}")
 

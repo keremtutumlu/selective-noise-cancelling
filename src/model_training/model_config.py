@@ -56,7 +56,7 @@ MODELS_DIR = BASE_DIR / "saved_models" / "separation_models"
 # Default checkpoint version, used when SNC_MODEL_VERSION is unset and no
 # --version flag is passed. Bump this only to move the committed default;
 # day-to-day version switching should go through the env var or the flag.
-DEFAULT_MODEL_VERSION = "v2.6"
+DEFAULT_MODEL_VERSION = "v2.8"
 
 # Saved-model naming scheme from RULES.md:
 #   <task>_<architecture>_<dataset-or-keyfeature>_v<major>.<minor>

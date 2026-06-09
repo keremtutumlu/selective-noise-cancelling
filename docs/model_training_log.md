@@ -595,44 +595,111 @@ mixer.
 
 ---
 
-## v2.7 — Stronger negatives + larger detection head + clean allow-list
+## v2.7 — Stronger negatives + larger detection head + focal loss
 
-**File:** `separator_unet_film_multi_v2.7.h5` (planned)  
+**File:** `separator_unet_film_multi_v2.7.h5`  
+**Trained:** 2026-06-09 (Colab, A100)  
+**Status:** Trained — focal loss collapsed the detection head; superseded by v2.8
+
+### Changes vs v2.6
+| Parameter | v2.6 | v2.7 | Why |
+|---|---|---|---|
+| `negative_prob` | 0.25 | **0.50** | Half of every batch is a negative example. |
+| Detection head | `GAP → Dense(128) → Dense(1)` | **`GAP → Dense(256) → Dropout(0.3) → Dense(1)`** | Doubled capacity + regularisation. |
+| Detection loss | BCE @ weight 0.3 | **Focal loss (α=0.25, γ=2) @ weight 1.0** | Planned: down-weight easy negatives. |
+| `over_firing_classes` | v2.5 list (10 classes) | **refreshed from v2.6 sweep** | `pig`, `drilling`, `sea_waves`, `helicopter`, `laughing`, `air_conditioner`, `vacuum_cleaner`, `frog`, `crickets`, `clapping`. |
+
+### Failure analysis — focal loss gradient collapse
+
+Focal loss with α=0.25, γ=2 at weight 1.0 produced catastrophically small
+gradients for the detection head during early training:
+
+```
+alpha_t × (1 − p_t)^γ  at random init (p=0.5)
+= 0.25 × 0.5^2 = 0.0625
+```
+
+Compare to BCE at the same init: `−log(0.5) ≈ 0.693`. The focal loss gradient
+is ~10× smaller than BCE at initialisation, so the head effectively never
+learned. By the time loss values were low enough for focal to provide any
+signal, the head had collapsed to predicting ~0.5 for every input.
+
+**Observed symptoms:**
+- Training converged quickly (best epoch=2, early stopped epoch=12).
+- Detection head output range across all test classes: < 0.05 (should be ~1.0
+  for present classes, ~0.0 for absent).
+- Web app detection: either zero classes found, or 5 random classes returned,
+  regardless of audio content.
+- The degenerate-detection fallback added to `audio_engine.py` (score range
+  < 0.15 → revert to mask-energy heuristic) fires on every v2.7 inference call.
+
+**Root cause:** Focal loss is designed to handle class imbalance **after** a
+model has already converged to reasonable predictions. Applying it from random
+initialisation amplifies the imbalance problem: the head sees all examples as
+"easy" (p≈0.5) at first, so nearly all gradient is suppressed before the head
+can learn anything.
+
+### What to keep from v2.7
+- `negative_prob=0.50` — correct direction, no issue
+- Refreshed `over_firing_classes` list — correct
+- Shared-cache parallel data generators (4 workers, one shared dict) — correct
+
+### What to revert in v2.8
+- Replace focal loss with BCE, reduce loss weight to 0.5
+- Reduce head dim back to 128, remove dropout (v2.6 head capacity was fine;
+  the problem was gradient signal, not capacity)
+
+---
+
+## v2.8 — BCE detection loss + FSD50K removed + clean 56-class vocab
+
+**File:** `separator_unet_film_multi_v2.8.h5`  
 **Trained:** —  
-**Status:** Planned — addresses the three v2.6 findings above
+**Status:** Planned — targets the feature/without-fsd50k branch
 
 ### Motivation
-v2.6 proved the detection-head architecture is the right structural choice
-(it trains, the loss converges, and individual classes can reach F1 ≥ 0.5).
-The problem is *quality of supervision*, not architecture. v2.7 doubles down
-on the head with more negatives, more capacity, and a loss that hurts more
-when the head is overconfidently wrong — without touching the separation
-branch, which is doing its job.
 
-### Planned changes
-| Parameter | v2.6 | v2.7 (planned) | Why |
+Two structural problems are resolved together:
+
+1. **Focal loss → BCE.** v2.7's detection head collapsed because focal loss
+   starves gradients at initialisation (see above). BCE with a moderate weight
+   (0.5) gives the head the gradient it needs from epoch 1.
+
+2. **FSD50K removed entirely.** Every version from v2.3 onward has shown that
+   FSD50K classes without local audio become phantom false positives. v2.4's
+   min-clips floor pruned the worst tail; v2.6's allow-list filtered them at
+   evaluation; but the phantom classes still cost capacity during training and
+   pollute the detection head's supervision signal. Removing FSD50K means the
+   head trains on a clean, fully-validatable 56-class vocabulary — every
+   training negative is a true negative.
+
+   Trade-off: the webapp can no longer query FSD50K-only removal targets.
+   The 56-class ESC-50 + UrbanSound8K vocabulary covers the common real-world
+   sounds relevant to the selective noise-cancelling use case.
+
+### Hyperparameters
+| Parameter | v2.7 | v2.8 | Why |
 |---|---|---|---|
-| `negative_prob` | 0.25 | **0.50** | Half of every batch is now a negative example. Most direct lever for raising precision; v2.6's flat F1 across thresholds points straight at insufficient negative exposure. |
-| Detection head | `GAP → Dense(128) → Dense(1)` | **`GAP → Dense(256) → Dropout(0.3) → Dense(1)`** | Doubles capacity, adds regularisation. v2.6's head likely under-fit a 227-way presence map. |
-| Detection loss | BCE @ weight 0.3 | **Focal loss (α=0.25, γ=2) @ weight 1.0** | Focal loss down-weights easy negatives so gradient signal concentrates on hard mistakes; raising the head's loss weight balances the multi-task. |
-| `over_firing_classes` | 10 classes (v2.5 sweep) | **refresh from v2.6 sweep** | New top-FP list: `pig`, `drilling`, `sea_waves`, `helicopter`, `laughing`, `air_conditioner`, `vacuum_cleaner`, `frog`, `crickets`, `clapping`. |
-| Allow-list source | accidentally 227 (stale) | **explicitly 56 (locally-validatable)** | Written from the sweep-time mixer, not the train-time mixer. The eval defensive intersection (just shipped) makes this idempotent. |
+| `negative_prob` | 0.50 | **0.50** | Keep — correct |
+| Detection head | `GAP → Dense(256) → Dropout(0.3) → Dense(1)` | **`GAP → Dense(128) → Dense(1)`** | Revert — capacity was not the bottleneck |
+| Detection loss | Focal (α=0.25, γ=2) @ weight 1.0 | **BCE @ weight 0.5** | Fix gradient collapse |
+| `over_firing_classes` | refreshed v2.6 list | **same** | Keep |
+| Dataset | ESC-50 + UrbanSound8K + FSD50K (~227 classes) | **ESC-50 + UrbanSound8K only (~56 classes)** | Remove phantom FP source |
 
-### What stays the same
-Separation branch, FiLM-conditioning, U-Net depth, batch size, training data,
-multi-resolution L1 loss — all unchanged. We are not regressing what already
-works.
+### Dataset
+- ESC-50 + UrbanSound8K only — **~56 classes**
+- No FSD50K download needed (saves 18-24 GB per Colab session)
+- Decode time: ~3-5 min (vs 30-60 min with FSD50K)
+- Cache file: `_decoded_cache_v1_sr16000_min40_esc-us8k.pkl`
 
-### Open questions before training
-- Should we *also* prune the model vocabulary to the 56 locally-validatable
-  classes? Pro: cleaner head, fewer phantom predictions. Con: webapp loses
-  every FSD50K-only class as a removal target. Leaning toward **keep all 227
-  in the vocabulary, restrict only the detection head's positive supervision
-  to the 56**, but needs a small training change. To be decided before the
-  v2.7 run.
-- SI-SDR eval should filter mixes where `mix > 30 dB SI-SDR(target, mix)` so
-  the headline number stops being dragged down by examples where there is
-  nothing to separate.
+### How to train
+```bash
+# Set version and run (on feature/without-fsd50k branch)
+SNC_MODEL_VERSION=v2.8 python src/model_training/train_conditioned_separator.py
+```
+
+Or in Colab: the version cell in `notebooks/colab_train_conditioned_separator.ipynb`
+already sets `v2.8` on this branch.
 
 ---
 

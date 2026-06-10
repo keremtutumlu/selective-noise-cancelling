@@ -701,6 +701,63 @@ SNC_MODEL_VERSION=v2.8 python src/model_training/train_conditioned_separator.py
 Or in Colab: the version cell in `notebooks/colab_train_conditioned_separator.ipynb`
 already sets `v2.8` on this branch.
 
+### Evaluation results (v2.8)
+
+**Training:** 60 epochs, all completed (no early stop — model was still improving at
+the final epoch). LR halved at epoch 48 (`ReduceLROnPlateau`), triggering a second
+improvement phase in epochs 49–60. Best `val_loss = 0.5041`.
+
+| Component | Epoch 1 | Epoch 60 | Change |
+|---|---|---|---|
+| `val_apply_mask_loss` (separation L1) | 0.4758 | **0.2821** | −41% |
+| `val_conditioned_separator_f32_det_loss` (BCE detection) | 0.6756 | **0.4439** | −34% |
+
+The detection loss falling from 0.68 → 0.44 confirms the head learned; v2.7's focal
+loss had kept this value flat at ~0.07 throughout training (gradient collapse).
+
+**SI-SDR (separation):**
+
+Mean SI-SDRi: **−24.85 dB**. All classes negative. Root cause: many test mixtures are
+dominated by the target class (`SI-SDR mix` > 30 dB for ~30% of examples), so any
+spectrogram masking degrades the waveform-level score even when the mask looks correct
+perceptually. Best classes: `clock_alarm` (−1.25 dB), `airplane` (−8.25 dB),
+`crow` (−7.89 dB), `hand_saw` (−10.72 dB), `thunderstorm` (−13.14 dB).
+
+SI-SDRi measures the isolated-stem waveform reconstruction quality, which is limited
+by spectrogram-phase reuse. Perceptual quality (used in the webapp) is not captured
+by this metric.
+
+**Detection (200 synthetic mixtures, allow-list = all 56 classes):**
+
+| Metric | Value | vs v2.6 |
+|---|---|---|
+| Macro F1 | **0.32** | +0.15 (+88%) |
+| Total TP | 190 | — |
+| Total FP | 456 | — |
+| Total FN | 299 | — |
+
+Top-performing classes: `vacuum_cleaner` (F1=0.82), `toilet_flush` (0.75),
+`crying_baby` (0.63), `gun_shot` (0.60), `brushing_teeth` (0.60), `clock_alarm` (0.59),
+`clapping` (0.57), `hand_saw` (0.57), `rain` (0.52), `helicopter` (0.50).
+
+Zero-F1 classes: `air_conditioner`, `chainsaw`, `door_wood_creaks`, `door_wood_knock`,
+`laughing`, `thunderstorm`. These are either broadband/diffuse (hard to isolate) or
+very short transients with low clip count.
+
+Top false-positive sources: `footsteps` (35 FPs), `siren` (23), `fireworks` (22),
+`washing_machine` (20), `wind` (19). These are acoustically broadband classes whose
+masks fire at low energy on unrelated audio.
+
+**Key finding:** Removing FSD50K and fixing BCE eliminated the phantom-FP problem
+structurally. Every FP in v2.8 is a genuine model error on a class that exists in the
+training vocabulary — diagnosable and fixable. In v2.3–v2.6, a large fraction of FPs
+were phantom detections from FSD50K-only classes that the eval mixer could never
+validate.
+
+**Smoke test:** HEALTHY. Mean out/in ratio 0.816; mean FiLM discrimination advantage
+177184×. Two weak classes: `cat` (−1.00× advantage, output near zero) and
+`chirping_birds` (−0.06×).
+
 ---
 
 ## How to add a new entry

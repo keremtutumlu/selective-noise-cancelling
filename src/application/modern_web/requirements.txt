@@ -1,0 +1,12 @@
+# Modern web app dependencies.
+# The ML stack (tensorflow/librosa/soundfile) is shared with the main project;
+# it is pinned here too so the Dockerfile can build a standalone image.
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9
+librosa==0.11.0
+soundfile
+numpy
+tensorflow==2.21.0
+# Optional: only needed if you publish via ngrok instead of cloudflared.
+# pyngrok

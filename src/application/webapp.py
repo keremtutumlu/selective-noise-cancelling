@@ -174,7 +174,8 @@ def detect_sounds(file_path):
     logs, lins = np.array(logs), np.array(lins)
 
     mix_energy = float(np.mean(lins ** 2)) + 1e-8
-    scores = {}
+    scores: dict = {}
+    energy_scores: dict = {}
     model = _current["model"]
     has_det = _model_has_detection_head()
 
@@ -182,17 +183,25 @@ def detect_sounds(file_path):
         q = np.tile(_query(name), (len(windows), 1))
         preds = model.predict([logs, q, lins], verbose=0)
         if has_det:
-            # preds = [est_stem, presence_prob]; average over windows.
-            presence_prob = preds[1]  # shape (n_windows, 1)
+            stem, presence_prob = preds[0], preds[1]
             scores[name] = float(np.mean(presence_prob))
+            energy_ratio = float(np.mean(stem ** 2) / mix_energy)
+            specificity = float(np.std(stem) / (np.mean(stem) + 1e-8))
+            energy_scores[name] = energy_ratio * (1.0 + specificity ** 2)
         else:
             est = preds
             energy_ratio = float(np.mean(est ** 2) / mix_energy)
-            # CoV²: real sounds produce concentrated masks (high CoV); broadband
-            # noise produces diffuse uniform masks (low CoV). Squaring sharpens
-            # the gap between specific and diffuse detections.
             specificity = float(np.std(est) / (np.mean(est) + 1e-8))
             scores[name] = energy_ratio * (1.0 + specificity ** 2)
+
+    # Detection head collapse guard: if the head outputs near-uniform
+    # probabilities (~0.5 for all classes) it did not converge — fall back to
+    # mask-energy scoring, which is more reliable in that regime.
+    if has_det and energy_scores:
+        score_vals = np.array(list(scores.values()), dtype=np.float32)
+        if float(score_vals.max() - score_vals.min()) < 0.15:
+            scores = energy_scores
+            has_det = False
 
     # If the model ships a detection allow-list, rank and threshold over that
     # subset only. Scoring above still runs over the full vocabulary (query

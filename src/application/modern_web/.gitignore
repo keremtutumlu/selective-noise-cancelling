@@ -1,0 +1,3 @@
+# Runtime artifacts created by launch.py --share
+cloudflared
+cloudflared.log

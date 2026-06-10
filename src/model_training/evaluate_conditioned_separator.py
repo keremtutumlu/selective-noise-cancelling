@@ -160,6 +160,7 @@ class ConditionedSeparatorEvaluator:
         print(f"  {'Class':<20}{'N':>5}{'SI-SDR mix':>14}{'SI-SDR model':>16}{'SI-SDRi':>11}")
         print(f"  {'-' * 20}{'-' * 5}{'-' * 14}{'-' * 16}{'-' * 11}")
         all_model, all_mix = [], []
+        per_class = []
         for name in class_names:
             if not sdr_model[name]:
                 continue
@@ -167,6 +168,13 @@ class ConditionedSeparatorEvaluator:
             m_mix = float(np.mean(sdr_mix[name]))
             all_model.extend(sdr_model[name])
             all_mix.extend(sdr_mix[name])
+            per_class.append({
+                "class": name,
+                "n": len(sdr_model[name]),
+                "si_sdr_mix": m_mix,
+                "si_sdr_model": m_model,
+                "si_sdri": m_model - m_mix,
+            })
             print(f"  {name:<20}{len(sdr_model[name]):>5}{m_mix:>11.2f} dB"
                   f"{m_model:>13.2f} dB{m_model - m_mix:>8.2f} dB")
 
@@ -185,12 +193,16 @@ class ConditionedSeparatorEvaluator:
             "si_sdr_mix": mean_mix,
             "n_scored": len(all_model),
         }
+        # Log only the lean aggregate to the Drive audit trail; the per-class
+        # breakdown would bloat every run_log.json entry with a 56-row list.
         cfg.log_drive_run(
             script="evaluate_conditioned_separator",
             version=str(self.model_path.stem),
             metrics=result,
         )
-        return result
+        # Return the per-class rows alongside the aggregate so callers (e.g. the
+        # thesis-results notebook) can plot them without re-parsing stdout.
+        return {**result, "per_class": per_class}
 
 
 if __name__ == "__main__":

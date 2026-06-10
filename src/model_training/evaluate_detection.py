@@ -239,6 +239,7 @@ def evaluate(model_path: Path, data_root: Path, n_test: int = 200,
         "Class", "N", "Prec", "Rec", "F1"))
     print("  " + "-" * 52)
     f1s = []
+    per_class = []
     for cls in sorted(available):
         if n_present[cls] == 0:
             continue
@@ -246,6 +247,13 @@ def evaluate(model_path: Path, data_root: Path, n_test: int = 200,
         rec = tp[cls] / (tp[cls] + fn[cls]) if (tp[cls] + fn[cls]) else 0.0
         f1 = 2 * prec * rec / (prec + rec) if (prec + rec) else 0.0
         f1s.append(f1)
+        per_class.append({
+            "class": cls,
+            "n": n_present[cls],
+            "precision": prec,
+            "recall": rec,
+            "f1": f1,
+        })
         print(f"  {cls:<22}{n_present[cls]:>6}{prec:>8.2f}{rec:>8.2f}{f1:>8.2f}")
     print("  " + "-" * 52)
     print(f"  {'MEAN F1':<22}{'':<6}{'':<8}{'':<8}{np.mean(f1s):>8.2f}")
@@ -257,8 +265,8 @@ def evaluate(model_path: Path, data_root: Path, n_test: int = 200,
     # classes with no local audio (these can only ever be false positives).
     # Surfaces the "one class fires on everything" failure mode directly.
     top_fp = sorted(fp.items(), key=lambda kv: kv[1], reverse=True)[:10]
+    available_set = set(available)
     if top_fp:
-        available_set = set(available)
         print("\n  Top false-positive classes (fired but not present):")
         for cls, count in top_fp:
             tag = "" if cls in available_set else "  [no local audio]"
@@ -277,13 +285,17 @@ def evaluate(model_path: Path, data_root: Path, n_test: int = 200,
             "top_k": top_k,
         },
     }
+    # Log only the lean aggregate to Drive; return the per-class rows and the
+    # top false-positive offenders for callers that build figures from them.
     cfg.log_drive_run(
         script="evaluate_detection",
         version=version or model_path.stem,
         metrics=result,
         notes=f"floor={absolute_floor} cap={relative_cap} top_k={top_k}",
     )
-    return result
+    top_fp_rows = [{"class": c, "fp": n, "no_local_audio": c not in available_set}
+                   for c, n in top_fp]
+    return {**result, "per_class": per_class, "top_fp": top_fp_rows}
 
 
 def _local_classes(data_root: Path, model_classes: list) -> list:

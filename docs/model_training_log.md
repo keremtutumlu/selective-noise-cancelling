@@ -760,6 +760,99 @@ validate.
 
 ---
 
+## v3.0 — Curated 15-class vocabulary (keep the best-detected classes)
+
+**File:** `separator_unet_film_multi_v3.0.h5`  
+**Trained:** —  
+**Status:** Planned — targets the `feature/v3.0` branch
+
+### Motivation
+
+v2.8's detection F1 (macro **0.32** over 56 classes) is strongly **bimodal**.
+A dozen classes score 0.5–0.8 while a long tail sits near zero, and a handful of
+broadband/diffuse classes fire as false positives on unrelated audio:
+
+| v2.8 signal | Classes |
+|---|---|
+| Best F1 | vacuum_cleaner 0.82, toilet_flush 0.75, crying_baby 0.63, gun_shot 0.60, brushing_teeth 0.60, clock_alarm 0.59, clapping 0.57, hand_saw 0.57, rain 0.52, helicopter 0.50 |
+| Zero F1 | air_conditioner, chainsaw, door_wood_creaks, door_wood_knock, laughing, thunderstorm |
+| Top FP sources | footsteps (35), siren (23), fireworks (22), washing_machine (20), wind (19) |
+
+v3.0 keeps only the **15 best-detected classes** and drops the rest. This lifts
+macro-F1 two ways at once: the average is taken over good classes only, **and**
+the over-firing broadband classes leave the candidate pool entirely, so they can
+no longer suppress real classes at the relative cutoff (a class only surfaces if
+its score clears `relative_cap × winner`; a diffuse class that always scores high
+raises that bar for everyone).
+
+Trade-off: the webapp can only detect/remove these 15 sounds. This is a
+deliberate narrowing toward the sounds the model actually separates well.
+
+### Class list (15)
+
+```python
+["vacuum_cleaner", "toilet_flush", "crying_baby", "gun_shot",
+ "brushing_teeth", "clock_alarm", "clapping", "hand_saw",
+ "rain", "helicopter", "sea_waves", "church_bells",
+ "crow", "coughing", "sneezing"]
+```
+
+The first 10 are v2.8's top-F1 classes; `sea_waves`/`church_bells` were strong in
+the v2.6 sweep (0.63 / 0.53); `crow`/`coughing`/`sneezing` are acoustically
+distinct, well-supported ESC-50 classes added to reach 15. All are ESC-50 /
+UrbanSound8K classes with ≥40 clips, so they clear the `min_clips_per_class=40`
+floor.
+
+### Hyperparameters
+| Parameter | v2.8 | v3.0 | Why |
+|---|---|---|---|
+| `negative_prob` | 0.50 | **0.50** | Keep — v2.8 recipe |
+| Detection head | `GAP → Dense(128) → Dense(1)` | **same** | Keep |
+| Detection loss | BCE @ weight 0.5 | **BCE @ weight 0.5** | Keep |
+| `over_firing_classes` | v2.7 list (10) | **None** | Offenders are gone from the vocabulary; isolate the class-reduction effect |
+| `keep_classes` | — | **15-class list above** | **new** — the whole change |
+| Dataset | ESC-50 + UrbanSound8K (~56) | **same data, 15-class subset** | Curated vocabulary |
+
+### How `keep_classes` works
+
+`load_all_datasets(..., keep_classes=[...])` restricts the **returned** dict to
+the listed classes. The on-disk decoded cache still holds the full vocabulary, so
+a v3.0 run and a full-vocabulary run share one cache file with no poisoning. The
+parameter is threaded loader → `SeparationMixer` → `ConditionedSeparatorTrainer`;
+the trainer's `__main__` sets it for `v3.0` only. The query vector, model query
+size, and detection head all size to 15 automatically.
+
+`evaluate_detection.py` needs no flag: it loads the model's 15-class
+`_classes.json`, intersects with locally-available audio (= the same 15), and
+measures F1 over exactly those classes.
+
+### How to train
+
+```bash
+SNC_MODEL_VERSION=v3.0 python src/model_training/train_conditioned_separator.py
+```
+
+Or in Colab: `notebooks/colab_train_conditioned_separator.ipynb` already sets
+`v3.0` and clones `feature/v3.0` on this branch. Run Stage 1 (train) → Stage 2
+(smoke test) → Stage 4 (detection F1).
+
+### Evaluation results (v3.0)
+
+_To fill in after the Colab run._
+
+| Metric | Value | vs v2.8 |
+|---|---|---|
+| Detection macro F1 | _TBD_ | from 0.32 |
+| Total TP / FP / FN | _TBD_ | — |
+| SI-SDRi average | _TBD_ | — |
+| Smoke test | _TBD_ | — |
+
+**What to watch:** if `rain`, `sea_waves`, or `helicopter` (the broadband members
+of the kept set) emerge as the new top-FP sources, a v3.1 can add them to
+`over_firing_classes` for weighted hard-negative training.
+
+---
+
 ## How to add a new entry
 
 After each training run, append a new `## v<X.Y>` section with:

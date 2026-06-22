@@ -65,6 +65,7 @@ class SeparationMixer:
         min_clips_per_class: int = 40,
         over_firing_classes: Optional[List[str]] = None,
         over_firing_weight: float = 3.0,
+        keep_classes: Optional[List[str]] = None,
         seed: int = 42,
         waveform_cache: Optional[Dict[str, List[np.ndarray]]] = None,
     ):
@@ -90,9 +91,19 @@ class SeparationMixer:
         # decoded dataset stays in memory exactly once.
         if waveform_cache is not None:
             self._waveform_cache: Dict[str, List[np.ndarray]] = waveform_cache
+            # A shared cache may hold the full vocabulary; narrow it here so a
+            # mixer asked for a curated subset (v3.0) honours it even when
+            # reusing a full decoded cache. The clip lists are shared by
+            # reference, so this costs only a new dict wrapper, not a copy.
+            if keep_classes:
+                keep = set(keep_classes)
+                self._waveform_cache = {
+                    c: self._waveform_cache[c]
+                    for c in self._waveform_cache if c in keep}
         else:
             self._waveform_cache = load_all_datasets(
-                data_root, target_sr, self.min_clips_per_class)
+                data_root, target_sr, self.min_clips_per_class,
+                keep_classes=keep_classes)
         self.class_names: List[str] = sorted(self._waveform_cache)
         self.num_classes = len(self.class_names)
 

@@ -245,6 +245,7 @@ def load_all_datasets(data_root: Path, target_sr: int = 16000,
                       min_clips_per_class: int = 40,
                       cache: bool = True,
                       cache_path: Optional[Path] = None,
+                      keep_classes: Optional[List[str]] = None,
                       ) -> Dict[str, List[np.ndarray]]:
     """
     Merge every dataset found under ``data_root`` into one class->clips dict.
@@ -272,10 +273,39 @@ def load_all_datasets(data_root: Path, target_sr: int = 16000,
     ``data_root``); every later call reads that single file in seconds.
     Set ``SNC_DISABLE_DATA_CACHE=1`` or ``cache=False`` to force a fresh
     decode. Delete the ``_decoded_cache_*.pkl`` file to rebuild it.
+
+    ``keep_classes`` (default None = no restriction): when given, the returned
+    dict is restricted to just those class names. This is the v3.0
+    curated-vocabulary path — training on a small, well-detected subset rather
+    than the full ~56-class set. The filter is applied to the *returned* dict
+    only; the on-disk cache always holds the full decoded vocabulary, so a
+    curated-subset run and a full-vocabulary run share one cache file without
+    one ever poisoning the other. Requested names absent from the data are
+    logged and skipped; if none match a ``ValueError`` is raised.
     """
     if os.environ.get("SNC_DISABLE_DATA_CACHE") == "1":
         cache = False
     cache_path = cache_path or _cache_file(data_root, target_sr, min_clips_per_class)
+
+    def _select(full: Dict[str, List[np.ndarray]]) -> Dict[str, List[np.ndarray]]:
+        """Restrict to ``keep_classes`` (if set). Applied to the return value
+        only, never to what is cached on disk."""
+        if not keep_classes:
+            return full
+        keep = set(keep_classes)
+        selected = {c: full[c] for c in full if c in keep}
+        missing = sorted(keep - set(full))
+        msg = (f"keep_classes: restricted to {len(selected)}/{len(full)} "
+               f"classes ({sum(len(v) for v in selected.values())} clips).")
+        if missing:
+            msg += f" {len(missing)} requested class(es) not in data: {missing}"
+        logging.info(msg)
+        if not selected:
+            raise ValueError(
+                f"keep_classes matched none of the {len(full)} available "
+                f"classes. Requested: {sorted(keep)}. "
+                f"Available: {sorted(full)}.")
+        return selected
 
     # Cold local SSD (fresh Colab container) but a Drive copy exists: pull it
     # rather than re-decoding ~50k WAVs. Makes the prep step optional.
@@ -290,7 +320,7 @@ def load_all_datasets(data_root: Path, target_sr: int = 16000,
                 f"Loaded decoded dataset from cache: {cache_path.name} "
                 f"({len(merged)} classes, "
                 f"{sum(len(v) for v in merged.values())} clips).")
-            return merged
+            return _select(merged)
         except (pickle.UnpicklingError, EOFError, OSError) as exc:
             logging.warning(f"Cache {cache_path.name} unreadable ({exc}); "
                             f"re-decoding from source audio.")
@@ -350,4 +380,4 @@ def load_all_datasets(data_root: Path, target_sr: int = 16000,
         except OSError as exc:
             logging.warning(f"Could not write dataset cache: {exc}")
 
-    return merged
+    return _select(merged)

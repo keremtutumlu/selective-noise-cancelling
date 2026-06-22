@@ -121,6 +121,7 @@ class ConditionedSeparatorTrainer:
         min_clips_per_class: int = 40,
         over_firing_classes: Optional[List[str]] = None,
         over_firing_weight: float = 3.0,
+        keep_classes: Optional[List[str]] = None,
         with_detection_head: bool = False,
         detection_head_dim: int = 128,
         detection_head_dropout: float = 0.0,
@@ -146,6 +147,7 @@ class ConditionedSeparatorTrainer:
         self.min_clips_per_class = min_clips_per_class
         self.over_firing_classes = over_firing_classes
         self.over_firing_weight = over_firing_weight
+        self.keep_classes = keep_classes
         self.with_detection_head = with_detection_head
         self.detection_head_dim = detection_head_dim
         self.detection_head_dropout = detection_head_dropout
@@ -170,6 +172,7 @@ class ConditionedSeparatorTrainer:
             min_clips_per_class=self.min_clips_per_class,
             over_firing_classes=self.over_firing_classes,
             over_firing_weight=self.over_firing_weight,
+            keep_classes=self.keep_classes,
             seed=self.seed + seed_offset,
             waveform_cache=waveform_cache,
         )
@@ -472,10 +475,32 @@ if __name__ == "__main__":
     # Detection head stays at dim=128/dropout=0 (v2.6 values worked fine).
     _V28_OVER_FIRING = _V27_OVER_FIRING
 
+    # v3.0: curated high-F1 vocabulary. Every version through v2.8 trained the
+    # full ~56-class ESC-50 + UrbanSound8K set, where detection F1 was strongly
+    # bimodal — a dozen classes scored 0.5-0.8 while many broadband/diffuse
+    # classes sat near zero and fired as false positives on unrelated audio
+    # (footsteps, siren, fireworks, washing_machine, wind topped the v2.8
+    # FP table). v3.0 keeps only the 15 best-detected classes from the v2.8
+    # per-class results (see docs/model_training_log.md). Restricting the
+    # vocabulary both raises the macro-F1 average (taken over good classes
+    # only) and removes the over-firing classes from the candidate pool, so
+    # they can no longer suppress real classes at the relative cutoff.
+    # Otherwise v3.0 keeps v2.8's winning recipe unchanged (negative_prob=0.50,
+    # BCE detection head @ weight 0.5, dim 128). over_firing_classes is left
+    # None on purpose: the known offenders are gone from the vocabulary, so the
+    # run isolates the effect of the class reduction.
+    _V30_KEEP = [
+        "vacuum_cleaner", "toilet_flush", "crying_baby", "gun_shot",
+        "brushing_teeth", "clock_alarm", "clapping", "hand_saw",
+        "rain", "helicopter", "sea_waves", "church_bells",
+        "crow", "coughing", "sneezing",
+    ]
+
     is_v25 = version == "v2.5"
     is_v26 = version == "v2.6"
     is_v27 = version == "v2.7"
     is_v28 = version == "v2.8"
+    is_v30 = version == "v3.0"
 
     # --- Speed knobs (safe defaults, override via env without code edits) ---
     # Mixed precision (float16): 1.5-2x faster on Tensor Core GPUs (T4/A100/L4)
@@ -503,7 +528,7 @@ if __name__ == "__main__":
         model_save_dir=cfg.MODELS_DIR,
         model_version=version,
         batch_size=batch_size,
-        negative_prob=(0.50 if (is_v27 or is_v28) else
+        negative_prob=(0.50 if (is_v27 or is_v28 or is_v30) else
                        0.25 if (is_v25 or is_v26) else 0.15),
         over_firing_classes=(
             _V28_OVER_FIRING if is_v28 else
@@ -512,11 +537,12 @@ if __name__ == "__main__":
             _V25_OVER_FIRING if is_v25 else None
         ),
         over_firing_weight=3.0,
-        with_detection_head=(is_v26 or is_v27 or is_v28),
+        keep_classes=_V30_KEEP if is_v30 else None,
+        with_detection_head=(is_v26 or is_v27 or is_v28 or is_v30),
         detection_head_dim=256 if is_v27 else 128,
         detection_head_dropout=0.3 if is_v27 else 0.0,
         detection_loss_weight=(1.0 if is_v27 else
-                               0.5 if is_v28 else 0.3),
+                               0.5 if (is_v28 or is_v30) else 0.3),
         detection_use_focal=is_v27,
         jit_compile=use_xla,
     ).train()

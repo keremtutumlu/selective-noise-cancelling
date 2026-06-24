@@ -36,6 +36,14 @@ burada $L$ pencere uzunluğu (FFT boyutu), $H$ sıçrama uzunluğu (hop length),
 
 $512$ noktalı FFT, $257$ adet tek-yanlı frekans bini üretmektedir. Nyquist bini ($k = 256$) düşürülerek model girişi $256$ frekans binine indirgenmiş; böylece frekans ekseni, evrişimsel alt örnekleme için elverişli olan $2$'nin kuvveti bir boyuta ($256$) sabitlenmiştir. Bir saniyelik bir pencere ($16\,000$ örnek), merkez hizalı STFT altında yaklaşık $126$ zaman çerçevesi üretmekte; bu eksen, sabit girdi boyutu için $128$ çerçeveye sıfır-doldurma ile tamamlanmaktadır. Sonuç olarak modelin girişi, $(256, 128, 1)$ boyutlu bir genlik spektrogramı tensörüdür ve her tensör yaklaşık bir saniyelik akustik bağlamı temsil etmektedir.
 
+STFT parametrelerinin seçimi, zaman ve frekans çözünürlüğü arasında bir ödünleşim içermektedir. Frekans çözünürlüğü $\Delta f = f_s / n_{\text{fft}} = 16000/512 = 31{,}25$ Hz, zaman çözünürlüğü ise $\Delta t = hop / f_s = 8$ ms olarak hesaplanmaktadır. Gabor–Heisenberg belirsizlik ilkesi gereği, $\Delta t \cdot \Delta f$ çarpımı bir alt sınırla sınırlandığından, pencerenin kısaltılması zaman çözünürlüğünü iyileştirirken frekans çözünürlüğünü, uzatılması ise tersini kötüleştirmektedir. $32$ ms'lik pencere, çevresel seslerin harmonik yapısını ayırt edebilecek frekans çözünürlüğü ile geçici (transient) olayları yakalayabilecek zaman çözünürlüğü arasında bir uzlaşı noktası olarak belirlenmiştir.
+
+Analiz–sentez çiftinin yapaylık üretmeden tersinir olabilmesi için, pencerenin sabit örtüşmeli toplama (Constant Overlap-Add, COLA) koşulunu sağlaması gerekmektedir. Bu koşul, kaydırılmış pencere karelerinin toplamının tüm örnekler için sabit kalmasını gerektirmektedir:
+
+$$\sum_{m} w^{2}[n - mH] = C, \qquad \forall n.$$
+
+$\%75$ örtüşmeli ($H = n_{\text{fft}}/4$) Hann penceresi bu koşulu sağladığından, maske uygulanmadığında karışım birebir geri elde edilebilmekte; maske uygulandığında ise çıkarım hattındaki yeniden sentez yapaylıkları en aza inmektedir (Alt Başlık 3.8.3).
+
 ### 3.2.3 Logaritmik Genlik Sıkıştırması
 
 Ses sinyallerinin genlik spektrumu, birkaç on yıllık (decade) bir dinamik aralığa yayılmaktadır. Bu geniş aralığın doğrudan ağa verilmesi, yüksek enerjili bileşenlerin gradyanları baskılamasına ve düşük enerjili ancak algısal olarak önemli bileşenlerin göz ardı edilmesine yol açmaktadır. Bu nedenle model girişinde, genlik spektrogramına logaritmik sıkıştırma uygulanmıştır:
@@ -171,6 +179,12 @@ $$\mathrm{FiLM}(x) = \gamma \odot x + \beta$$
 
 biçiminde tanımlanmaktadır; burada $\odot$ kanal ekseni boyunca yayınımlı (broadcast) çarpımı göstermektedir. Bu dönüşüm, hesaplama grafiğinde bir çarpma ($x \odot \gamma$) ve bir toplama ($+\,\beta$) işlemiyle uygulanmakta; $\gamma$ ve $\beta$ parametreleri, ilgili seviyenin kanal sayısına eşit uzunlukta üretilip $(1, 1, C)$ biçimine yeniden şekillendirilerek tüm uzamsal konumlara aynı biçimde uygulanmaktadır. FiLM, koşullandırma sinyalini ana evrişimsel yoldan ayrıştırması ve çarpımsal modülasyonla kanal seçiciliği sağlaması bakımından, sorgu vektörünün doğrudan eklenmesine göre daha güçlü bir denetim mekanizması sunmaktadır.
 
+FiLM dönüşümünün geri yayılımdaki davranışı, koşullandırmanın neden etkili olduğunu açıklamaktadır. Etkinliğe göre türev $\partial\,\mathrm{FiLM}(x)/\partial x = \gamma$ olduğundan, koşullandırma parametresi $\gamma$, ilgili kanaldan geçen gradyanı kanal-bazlı olarak ölçeklemekte, yani bir çarpımsal geçit (multiplicative gating) işlevi görmektedir. Koşullandırma parametrelerine göre türevler ise
+
+$$\frac{\partial \mathcal{L}}{\partial \gamma_c} = \sum_{u} \frac{\partial \mathcal{L}}{\partial\,\mathrm{FiLM}(x)_{u,c}}\, x_{u,c}, \qquad \frac{\partial \mathcal{L}}{\partial \beta_c} = \sum_{u} \frac{\partial \mathcal{L}}{\partial\,\mathrm{FiLM}(x)_{u,c}}$$
+
+biçimindedir; burada $u$ indisi uzamsal konumlar üzerinden toplamı göstermektedir. Afin dönüşüm, yalnızca ölçek ($\gamma$) ya da yalnızca öteleme ($\beta$) içeren kısıtlı biçimlere göre daha yüksek ifade gücüne sahiptir: $\gamma_c \to 0$ ataması bir kanalı ilgili sınıf için bütünüyle bastırabilmekte, $\beta_c$ ise kendisini izleyen ReLU etkinleştirmesinin eşiğini kaydırarak kanalın etkinlik durumunu sınıfa göre değiştirebilmektedir. Sınıf-seçici maskelemenin temel mekanizması, bu kanal-bazlı bastırma ve eşik kaydırma işlemleridir.
+
 ### 3.5.4 Sorgu Gömme ve Çok Seviyeli Projeksiyon
 
 Tek-sıcak sınıf sorgusu, önce paylaşılan bir gömme katmanından geçirilmektedir; bu katman, $128$ boyutlu bir yoğun (Dense) gömme üretmekte ve ReLU ile etkinleştirilmektedir. Paylaşılan gömme, her FiLM seviyesi için ayrı ölçek ve öteleme projeksiyonlarına beslenmektedir: her kodlayıcı seviyesi ve darboğaz, kendi $\gamma$ ve $\beta$ parametrelerini üreten bağımsız yoğun katmanlara sahiptir. FiLM koşullandırması yalnızca darboğazda değil, beş ayrı noktada — birinci ila dördüncü kodlayıcı seviyeleri (e1–e4) ve darboğaz — uygulanmaktadır. Koşullandırmanın tüm kodlayıcı seviyelerinde uygulanması, kodlayıcının kendisinin sınıfa özgü özellikler kurmasını zorlamakta; böylece kod çözücüye giren atlama bağlantıları da sınıfa özgü etkinlikler taşımaktadır. Bu çok seviyeli koşullandırmanın maske kesinliğine katkısı, dördüncü bölümde niceliksel olarak gösterilmiştir.
@@ -235,11 +249,19 @@ $$\theta_t = \theta_{t-1} - \eta\, \frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \epsilon}
 
 ile yapılmaktadır. Bu çalışmada başlangıç öğrenme oranı $\eta = 10^{-3}$, moment katsayıları ise olağan değerlerinde ($\beta_1 = 0{,}9$, $\beta_2 = 0{,}999$) alınmıştır. Adam'ın parametre-bazlı uyarlanır adımları, farklı ölçeklerdeki gradyanlara sahip evrişimsel ve FiLM projeksiyon katmanlarının birlikte kararlı biçimde eğitilmesini sağlamaktadır.
 
+Adam'ın iki belirleyici bileşeni, başlangıç yanlılığı düzeltmesi ve uyarlanır adım ölçeklemesidir. Birinci moment $m_t = (1 - \beta_1)\sum_{i=1}^{t}\beta_1^{\,t-i} g_i$ açılımıyla yazıldığında beklenen değeri $\mathbb{E}[m_t] = \mathbb{E}[g_t]\,(1 - \beta_1^{t})$ olur; sıfırdan başlatılan momentler bu nedenle ilk adımlarda gerçek gradyana göre sıfıra doğru yanlıdır. $1 - \beta_1^{t}$ ile bölme, bu yanlılığı tam olarak düzelterek özellikle eğitimin başındaki güncellemelerin güvenilir olmasını sağlamaktadır. İkinci moment $\hat{v}_t$ ile yapılan ölçekleme ise her parametreye, gradyan büyüklüğünün karekök-ortalamasıyla ters orantılı, uyarlanır bir adım atfetmektedir; böylece güncelleme adımının büyüklüğü yaklaşık olarak
+
+$$|\Delta\theta_t| \approx \eta\,\frac{|\hat{m}_t|}{\sqrt{\hat{v}_t} + \epsilon} \lesssim \eta$$
+
+ile sınırlanmaktadır. Bu özellik, momentum (birinci moment) ve RMSProp (ikinci moment) yöntemlerinin güçlü yönlerini birleştirerek, gradyan ölçekleri katmandan katmana değişen koşullu ağın kararlı yakınsamasını desteklemektedir.
+
 ### 3.7.2 Karma Hassasiyet Eğitimi ve Kayıp Ölçekleme
 
 Eğitim, hesaplama hızı ve bellek kullanımı açısından karma hassasiyet (mixed precision) politikası altında yürütülmüştür. Bu politikada ileri ve geri yayılım hesaplamaları yarı hassasiyette (float16) yapılırken, ana ağırlıklar tam hassasiyette (float32) tutulmaktadır [36]. Yarı hassasiyet, Tensor Çekirdeği (Tensor Core) donanımına sahip grafik işlemcilerde (T4, A100, L4) işlem hızını yaklaşık $1{,}5$–$2$ kat artırmakta ve etkinlik belleğini yarıya indirmektedir.
 
 Yarı hassasiyetin temel riski, küçük gradyanların float16 alt-taşma sınırının altında kalarak sıfıra yuvarlanmasıdır. Bu sorun, kayıp ölçekleme (loss scaling) ile giderilmiştir: kayıp, geri yayılımdan önce büyük bir katsayıyla ölçeklenmekte, gradyanlar hesaplandıktan sonra aynı katsayıyla geri ölçeklenmektedir. Böylece gradyanlar, ara hesaplama boyunca float16'nın temsil edilebilir aralığında tutulmaktadır. Bu işlev, Adam optimize edicisinin bir kayıp-ölçekleme optimize edicisiyle (LossScaleOptimizer) sarmalanmasıyla sağlanmış; sarmalama, herhangi bir başarısızlık ya da tam hassasiyet politikası durumunda yalın Adam'a güvenli biçimde geri dönecek şekilde korumaya alınmıştır. Maske çıkış katmanı ve maske uygulama çarpımının tam hassasiyette sabitlenmesiyle (Alt Başlık 3.5.5) birlikte, karma hassasiyet doğruluk kaybı olmaksızın uygulanmaktadır.
+
+Yarı hassasiyetin sayısal kısıtı, sayı biçiminden kaynaklanmaktadır: float16, bir işaret, beş üs ve on mantis bitiyle temsil edilmekte; en küçük pozitif normal değeri yaklaşık $6{,}1 \times 10^{-5}$, en büyük değeri ise $65\,504$ olmaktadır. Bu dinamik aralık, float32'ye göre belirgin biçimde dardır. Derin ağların geri yayılımında gradyanların önemli bir bölümü $10^{-5}$ mertebesinin altına inebildiğinden, doğrudan float16 ile temsil edildiklerinde sıfıra yuvarlanmaktadır. Kayıp ölçekleme, gradyanın doğrusallığından ($\nabla(S\,\mathcal{L}) = S\,\nabla\mathcal{L}$) yararlanarak kaybı bir $S$ katsayısıyla çarpmakta ve tüm gradyanları $S$ kat yukarı, temsil edilebilir aralığa kaydırmakta; parametre güncellemesinden önce gradyanlar $S$'e bölünerek özgün ölçeklerine döndürülmektedir. Böylece sayısal doğruluk korunurken yarı hassasiyetin hız ve bellek kazanımı elde edilmektedir.
 
 ### 3.7.3 XLA (JIT) Derlemesi
 

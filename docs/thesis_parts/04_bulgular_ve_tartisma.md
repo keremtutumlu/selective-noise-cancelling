@@ -22,6 +22,8 @@ $$\text{SI-SDRi} = \text{SI-SDR}(\hat{s}, s) - \text{SI-SDR}(x, s).$$
 
 Pozitif bir SI-SDRi değeri, modelin işlenmemiş karışıma kıyasla bir iyileştirme sağladığını göstermektedir. SI-SDR ölçütü sessizliğe karşı tanımsız olduğundan, ayrıştırma değerlendirmesi yalnızca pozitif örnekler (sorgu sınıfının karışımda bulunduğu durumlar) üzerinde yapılmaktadır.
 
+SI-SDR'nin ölçek-değişmezliği, hedef bileşeninin kestirim üzerine dik izdüşümünden kaynaklanmaktadır. $\alpha = \hat{s}^{\top}s / \lVert s \rVert^{2}$ katsayısı, $\hat{s}$ vektörünü $s$ doğrultusuna izdüşüren en küçük kareler çözümüdür; bu seçim, hedef bileşeni $s_{\text{hedef}} = \alpha s$ ile bozulma bileşeni $e = \hat{s} - \alpha s$ vektörlerini birbirine dik kılmaktadır ($s_{\text{hedef}}^{\top} e = 0$). Kestirimin sabit bir $\kappa$ katsayısıyla ölçeklenmesi ($\hat{s} \to \kappa\hat{s}$), hem $s_{\text{hedef}}$ hem de $e$ bileşenlerini aynı $\kappa$ katıyla büyüttüğünden, ikisinin güç oranı ve dolayısıyla SI-SDR değeri değişmeden kalmaktadır. Bu özellik, ölçütün modelin genel bir kazanç (ölçek) hatasından etkilenmemesini; bunun yerine yalnızca hedefin spektro-zamansal yapısının ne ölçüde geri kazanıldığını ölçmesini sağlamaktadır.
+
 ### 4.1.2 Tespit Metrikleri
 
 Tespit başarımı, kesinlik (precision), duyarlılık (recall) ve bunların harmonik ortalaması olan $F_1$ ölçütüyle değerlendirilmiştir. Bir sınıf için doğru pozitif (DP), yanlış pozitif (YP) ve yanlış negatif (YN) sayıları üzerinden

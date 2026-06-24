@@ -112,6 +112,39 @@ $$x \leftarrow \frac{x}{\max_n |x[n]|}, \qquad s_i \leftarrow \frac{s_i}{\max_n 
 
 Tepe normalizasyonu, STFT genliklerinin eğitim boyunca tutarlı bir dağılımda kalmasını güvence altına almaktadır. Bu adımın çıkarım hattında birebir tekrarlanması zorunludur; aksi hâlde modelin etkinlikleri eğitilmemiş bir çalışma bölgesine kaymaktadır. Nitekim bir denemede, çıkarım hattının ham (normalize edilmemiş) sesi modele verilmesi, STFT genliklerinin eğitim dağılımına göre üç ila on kat küçük kalmasına ve modelin tüm sınıflarda işlevsiz hâle gelmesine yol açmıştır. Bu hata, çıkarım hattında tam dosya genliğinin tepe normalizasyonuyla giderilmiş ve eğitim ile çıkarım dağılımlarının tutarlılığı sağlanmıştır.
 
+Yukarıda açıklanan bir örneğin üretim süreci, Algoritma 3.1'de bütünleşik olarak verilmiştir.
+
+```
+Algoritma 3.1: Anlık karışım örneği üretimi (SeparationMixer)
+─────────────────────────────────────────────────────────────────────
+Girdi : C = {sınıf → dalga biçimi listesi}      (bellek içi klip önbelleği)
+        K_max (en çok kaynak sayısı), [a_alt, a_üst] (genlik aralığı)
+        P_neg (negatif olasılığı), P_gür (gürültü olasılığı)
+        [SNR_alt, SNR_üst] (gürültü düzeyi), w (sınıf ağırlık vektörü)
+Çıktı : (X_log, q, X_lin, T)  — log-genlik, sorgu, doğrusal genlik, hedef genlik
+─────────────────────────────────────────────────────────────────────
+ 1:  k ← DüzgünTamsayı(1, K_max)
+ 2:  mevcut ← C'nin sınıflarından k tanesini yerine koymadan örnekle
+ 3:  x ← 0;   pencereler ← {}
+ 4:  for each c ∈ mevcut do
+ 5:      klip ← RastgeleSeç(C[c])
+ 6:      p ← BirSaniyelikPencereKırp(klip)            ▷ kısa ise sıfır-doldur
+ 7:      a ← Düzgün(a_alt, a_üst);   p ← a · p
+ 8:      pencereler[c] ← p;   x ← x + p
+ 9:  if Düzgün(0,1) < P_gür then
+10:      x ← x + GenişBantGürültü(x, [SNR_alt, SNR_üst])   ▷ ½ beyaz, ½ pembe
+11:  tepe ← max_n |x[n]|
+12:  x ← x / tepe;   for each c do pencereler[c] ← pencereler[c] / tepe
+13:  yok ← C'nin sınıfları ∖ mevcut
+14:  if yok ≠ ∅ and Düzgün(0,1) < P_neg then          ▷ negatif örnek
+15:      c* ← AğırlıklıÖrnekle(yok, w);   T ← 0
+16:  else                                             ▷ pozitif örnek
+17:      c* ← RastgeleSeç(mevcut);        T ← pencereler[c*]
+18:  q ← OneHot(c*)
+19:  X_lin ← |STFT(x)|;   X_log ← log(1 + X_lin);   T ← |STFT(T)|
+20:  return (X_log, q, X_lin, T)
+```
+
 ## 3.5 FiLM-Koşullu U-Net Mimarisi
 
 Önerilen modelin çekirdeği, iki girişli ve FiLM ile koşullandırılmış iki boyutlu bir U-Net mimarisidir. Birinci giriş, $(256, 128, 1)$ boyutlu logaritmik genlik spektrogramı; ikinci giriş ise sözcük dağarcığı üzerindeki $(N,)$ boyutlu tek-sıcak sınıf sorgusudur. Ağın çıkışı, sorgulanan sınıf için $[0, 1]$ aralığında değer alan tek bir yumuşak maskedir. İlk kodlayıcı bloğunun kanal sayısı (`base_filters`) $32$ alındığında model yaklaşık $8{,}3$ milyon parametre içermektedir. Mimarinin genel yapısı Şekil 3.3'te gösterilmiştir.
@@ -220,6 +253,32 @@ Eğitim, üç geri çağırma (callback) işleviyle denetlenmiştir. Birincisi, 
 
 Tek bir Python üreteci üzerinde çalışan ve örnek başına iki librosa STFT hesaplayan veri hattının, grafik işlemcisini aç bıraktığı gözlemlenmiştir; bir A100 üzerinde yaklaşık $20$ ms'de çalışması beklenen bir eğitim adımı, üretecin darboğazı nedeniyle yaklaşık $100$ ms sürmüştür. Bu darboğaz, birden çok bağımsız karışım üretecinin işçi iş parçacıkları arasında dönüşümlü olarak işletilmesiyle (tf.data interleave) giderilmiştir. Varsayılan olarak dört paralel üretici kullanılmakta; her üretici ayrı bir tohum (seed) değeriyle başlatılmaktadır. Çözülmüş veri kümesi, tüm üreticiler ve doğrulama üreteci tarafından paylaşılan tek bir bellek içi sözlükte tutulmaktadır; böylece dört veri işçisi, çok gigabaytlık veri kümesinin dört kopyası yerine yalnızca dört iş parçacığı maliyeti getirmektedir. Hat, ön getirme (prefetch) ile tamamlanarak veri hazırlamanın hesaplama ile örtüşmesi sağlanmıştır.
 
+Bu alt başlıkta açıklanan optimizasyon ve denetim mekanizmalarının bütünleştiği eğitim süreci, Algoritma 3.2'de özetlenmiştir.
+
+```
+Algoritma 3.2: Koşullu ayrıştırıcının eğitim döngüsü
+─────────────────────────────────────────────────────────────────────
+Girdi : üreteç akışı G (Algoritma 3.1), model f_θ, Adam(η),
+        dönem sayısı E, dönem başına adım S, kayıp ölçeği s_kayıp,
+        tespit kaybı ağırlığı w_t
+Çıktı : en düşük doğrulama kaybına sahip θ* parametreleri
+─────────────────────────────────────────────────────────────────────
+ 1:  Karma hassasiyet politikasını ata (mixed_float16); XLA derlemesini etkinleştir
+ 2:  for e ← 1 to E do
+ 3:      for adım ← 1 to S do
+ 4:          (X_log, q, X_lin, T) ← G'den bir yığın al
+ 5:          y_var ← [ max|T| > 10⁻⁶ ]                ▷ varlık etiketi (1/0)
+ 6:          (M, p̂) ← f_θ(X_log, q)                   ▷ maske ve varlık olasılığı
+ 7:          Ŝ ← M ⊙ X_lin                            ▷ kestirilen stem genliği
+ 8:          L ← L_ÇÇL1(Ŝ, T) + w_t · BCE(p̂, y_var)
+ 9:          L̃ ← s_kayıp · L                          ▷ kayıp ölçekleme (float16 alt-taşması)
+10:          g ← ∇_θ L̃;   g ← g / s_kayıp             ▷ gradyanı geri ölçekle
+11:          θ ← AdamGüncelle(θ, g, η)
+12:      L_doğ ← SabitDoğrulamaKümesindeKayıp(f_θ)
+13:      θ*, η ← KontrolNoktası_ÖğrenmeOranı_ErkenDurdurma(L_doğ, θ, η)
+14:  return θ*
+```
+
 ### 3.7.6 Hiperparametreler ve Donanım Ortamı
 
 Önerilen modelde kullanılan başlıca hiperparametreler Tablo 3.1'de özetlenmiştir.
@@ -252,7 +311,28 @@ Eğitilmiş model, bir web uygulaması üzerinden uçtan uca bir gürültü temi
 
 Tespit aşamasında, yüklenen dosyadan hız için en çok sekiz saniyelik bir bölüm bir saniyelik pencerelere ayrılmaktadır. Her pencere, eğitimle tutarlılığı korumak için tepe genliği $1{,}0$ olacak biçimde normalize edilmekte ve modele beslenmektedir. Tespit başına sahip modellerde, her aday sınıf için pencereler üzerinden ortalama varlık olasılığı bir tespit puanı olarak kullanılmaktadır. Tespit başının yakınsamadığı ve tüm sınıflar için yaklaşık $0{,}5$ değerinde neredeyse düzgün bir olasılık ürettiği durumlara karşı bir koruma tanımlanmıştır: puan aralığı $0{,}15$ eşiğinin altında kalırsa, hat maske-enerjisi sezgiseline geri dönmektedir.
 
-Aday sınıflar, varsa modele ait tespit izin listesiyle (allow-list) sınırlandırılmakta; böylece yerel verinin doğrulayamadığı sınıflar aday havuzundan çıkarılmaktadır. Yüzeye çıkarılacak sınıflar, iki ölçütle belirlenmektedir: mutlak bir taban ($0{,}05$) ve kazanan sınıf puanının göreli bir oranı ($0{,}80 \times$ kazanan). Bu iki eşiğin büyüğü kesme değeri olarak alınmakta ve eşiği aşan en çok beş sınıf kullanıcıya sunulmaktadır. Bu çalışma noktası ($\text{taban} = 0{,}05$, $\text{göreli kesme} = 0{,}80$, $k = 5$), dördüncü bölümde sunulan eşik taramasında en az sahte yüzeyleme ile en yüksek kesinliği veren ayar olarak seçilmiştir.
+Aday sınıflar, varsa modele ait tespit izin listesiyle (allow-list) sınırlandırılmakta; böylece yerel verinin doğrulayamadığı sınıflar aday havuzundan çıkarılmaktadır. Yüzeye çıkarılacak sınıflar, iki ölçütle belirlenmektedir: mutlak bir taban ($0{,}05$) ve kazanan sınıf puanının göreli bir oranı ($0{,}80 \times$ kazanan). Bu iki eşiğin büyüğü kesme değeri olarak alınmakta ve eşiği aşan en çok beş sınıf kullanıcıya sunulmaktadır. Bu çalışma noktası ($\text{taban} = 0{,}05$, $\text{göreli kesme} = 0{,}80$, $k = 5$), dördüncü bölümde sunulan eşik taramasında en az sahte yüzeyleme ile en yüksek kesinliği veren ayar olarak seçilmiştir. Tespit süreci Algoritma 3.3'te verilmiştir.
+
+```
+Algoritma 3.3: Ses olayı tespiti
+─────────────────────────────────────────────────────────────────────
+Girdi : ses, model f, sınıf listesi 𝒞, taban τ=0,05, göreli kesme ρ=0,80,
+        üst sınır k=5, izin listesi 𝒜
+Çıktı : tespit edilen sınıflar kümesi D
+─────────────────────────────────────────────────────────────────────
+ 1:  W ← ses'i 1 sn pencerelere böl (en çok 8 pencere)
+ 2:  for each w ∈ W do
+ 3:      w ← w / max|w|;   (X_log^w, X_lin^w) ← Spektrogram(w)
+ 4:  for each c ∈ 𝒞 do
+ 5:      p_c ← ort_{w ∈ W} f(X_log^w, OneHot(c)).varlık     ▷ pencereler üzeri ortalama
+ 6:  if ( max_c p_c − min_c p_c ) < 0,15 then               ▷ tespit başı çöküş koruması
+ 7:      p ← MaskeEnerjisiPuanı(·)                           ▷ sezgisele geri dön
+ 8:  𝒞 ← 𝒞 ∩ 𝒜                                              ▷ izin listesiyle sınırla
+ 9:  kazanan ← argmax_{c ∈ 𝒞} p_c
+10:  kesme ← max(τ, ρ · p_kazanan)
+11:  D ← { c ∈ 𝒞 : p_c ≥ kesme } kümesinin en yüksek puanlı k tanesi
+12:  return D
+```
 
 ### 3.8.2 Oran Maskesi ile Kaynak Çıkarma
 
@@ -268,7 +348,31 @@ $\lambda = 1$ tam bastırmaya, $\lambda = 0$ ise hiç bastırma yapılmamasına 
 
 ### 3.8.3 Hanning Pencereli Örtüşmeli Toplama
 
-Çıkarma işlemi, tüm dosya boyunca, model girişinin sabit zaman boyutuna ($128$ çerçeve) uyacak biçimde parçalar hâlinde uygulanmaktadır. Parçalar arası adım, $\text{TIME\_FRAMES}/4 = 32$ çerçeve (yaklaşık $0{,}25$ s) olarak belirlenmiş; bu, ardışık parçalar arasında $\%75$ örtüşme sağlamaktadır. Her parça, bir Hann penceresiyle ağırlıklandırılıp örtüşmeli toplama (overlap-add) ile birleştirilmekte ve birikmiş ağırlıklara bölünerek normalize edilmektedir. Örtüşme oranının $\%50$'den $\%75$'e çıkarılması, parça sınırlarında düzenli aralıklarla duyulan ve dördüncü bölümde belgelenen darbeli yapaylığı (boundary pulsing) gidermiştir. Ayrıca, müzikal gürültüyü bastırmak için maske, zaman ekseninde beş çerçevelik (yaklaşık $40$ ms) bir ortalama çekirdeğiyle düzleştirilmektedir.
+Çıkarma işlemi, tüm dosya boyunca, model girişinin sabit zaman boyutuna ($128$ çerçeve) uyacak biçimde parçalar hâlinde uygulanmaktadır. Parçalar arası adım, $\text{TIME\_FRAMES}/4 = 32$ çerçeve (yaklaşık $0{,}25$ s) olarak belirlenmiş; bu, ardışık parçalar arasında $\%75$ örtüşme sağlamaktadır. Her parça, bir Hann penceresiyle ağırlıklandırılıp örtüşmeli toplama (overlap-add) ile birleştirilmekte ve birikmiş ağırlıklara bölünerek normalize edilmektedir. Örtüşme oranının $\%50$'den $\%75$'e çıkarılması, parça sınırlarında düzenli aralıklarla duyulan ve dördüncü bölümde belgelenen darbeli yapaylığı (boundary pulsing) gidermiştir. Ayrıca, müzikal gürültüyü bastırmak için maske, zaman ekseninde beş çerçevelik (yaklaşık $40$ ms) bir ortalama çekirdeğiyle düzleştirilmektedir. Çıkarma aşamasının tümü, oran maskesi (Alt Başlık 3.8.2), örtüşmeli toplama ve faz yeniden kullanımı (Alt Başlık 3.8.4) adımlarını birleştiren Algoritma 3.4'te verilmiştir.
+
+```
+Algoritma 3.4: Hanning örtüşmeli toplama ile kaynak çıkarma
+─────────────────────────────────────────────────────────────────────
+Girdi : ses, seçili sınıflar 𝒮, çıkarma kuvveti λ, pencere TF=128,
+        adım H=TF/4, model f
+Çıktı : temizlenmiş ses
+─────────────────────────────────────────────────────────────────────
+ 1:  tepe ← max|ses|;   ses ← ses / tepe
+ 2:  𝐗 ← STFT(ses);   Φ ← ∠𝐗;   |𝐗| ← genlik;   T ← çerçeve sayısı
+ 3:  A ← 0_{F×T};   Wʷ ← 0_T;   ℎ ← Hann(TF)
+ 4:  for başla ← 0, H, 2H, … , T−1 do
+ 5:      bitir ← min(başla+TF, T);   C ← |𝐗|[:, başla:bitir]   ▷ gerekirse sıfır-doldur
+ 6:      M ← 1
+ 7:      for each c ∈ 𝒮 do
+ 8:          ê_c ← f(log(1+C), OneHot(c)).maske ⊙ C
+ 9:          r_c ← clip( ê_c / (C + ε), 0, 1 )                  ▷ genlik oranı
+10:          M ← M · clip( 1 − λ · r_c, 0, 1 )                  ▷ çarpımsal birleştirme
+11:      M ← ZamandaDüzleştir(M, 5)                             ▷ ~40 ms ortalama
+12:      A[:, başla:bitir] ← A[:, başla:bitir] + ℎ · (C · M)
+13:      Wʷ[başla:bitir] ← Wʷ[başla:bitir] + ℎ
+14:  |Ŷ| ← A / max(Wʷ, ε)
+15:  return ISTFT( |Ŷ| · e^{jΦ} ) · tepe
+```
 
 ### 3.8.4 Faz Yeniden Kullanımı ve Ters STFT
 

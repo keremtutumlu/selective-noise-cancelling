@@ -63,6 +63,7 @@ Haziran, 2026
 - ABSTRACT
 - ŞEKİL LİSTESİ
 - TABLO LİSTESİ
+- ALGORİTMA LİSTESİ
 - SİMGELER VE KISALTMALAR
 - **1. GİRİŞ**
   - 1.1 Problemin Tanımı ve Motivasyonu
@@ -169,6 +170,17 @@ June, 2026
 | Tablo 3.1 | Önerilen modelin eğitim hiperparametreleri |
 | Tablo 4.1 | Denenen tasarım değişiklikleri ve gözlemlenen sonuçlar |
 | Tablo 4.2 | Sınıf bazlı tespit ve ayrıştırma başarımı |
+
+---
+
+## ALGORİTMA LİSTESİ
+
+| Algoritma | Açıklama |
+|---|---|
+| Algoritma 3.1 | Anlık karışım örneği üretimi (SeparationMixer) |
+| Algoritma 3.2 | Koşullu ayrıştırıcının eğitim döngüsü |
+| Algoritma 3.3 | Ses olayı tespiti |
+| Algoritma 3.4 | Hanning örtüşmeli toplama ile kaynak çıkarma |
 
 ---
 

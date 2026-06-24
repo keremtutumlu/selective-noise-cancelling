@@ -37,3 +37,27 @@ $$V \approx W H.$$
 Çarpanlar, bir uzaklık ölçütünün (örneğin Kullback–Leibler ıraksaması) çarpımsal güncelleme kurallarıyla azaltılmasıyla kestirilmektedir. Denetimli kaynak ayrıştırmada her kaynak için ayrı bir spektral sözlük önceden öğrenilmekte, karışım bu sözlüklerin birleşimiyle çözümlenmekte ve etkinlikler kaynaklara göre gruplanarak ayrıştırma gerçekleştirilmektedir [8]. Bu çerçeve, harmonik yapısı belirgin müzik sinyallerinde başarılı sonuçlar vermekle birlikte, doğrusal ve sabit bir baz varsayımına dayandığından, benzer tınıya sahip ya da geniş bantlı çevresel seslerin örtüştüğü karışımlarda ayırt edici bir çözüm üretememektedir. Ayrıca sözlüklerin temiz, izole kayıtlardan öğrenilmesi gerekliliği, yöntemin gerçek dünya verisine genellenmesini sınırlandırmaktadır.
 
 **Klasik yaklaşımların ortak kısıtı.** Bu yöntemlerin tümü, sığ (shallow) ve elle tasarlanmış temsillere, durağanlık varsayımına ve doğrusal modellere dayanmaktadır. Bir ses sınıfını tanımlayan yüksek düzeyli, doğrusal olmayan ve bağlama duyarlı spektro-zamansal örüntüler, bu çerçevelerin temsil gücünün dışında kalmaktadır. Söz konusu sınır, kaynak ayrıştırma probleminin, çok sayıda karışım–kaynak örneğinden doğrusal olmayan bir eşleme fonksiyonunun öğrenildiği veriye dayalı derin öğrenme yöntemleriyle yeniden ele alınmasını gerektirmiştir. Bu yöntemlerin temelini oluşturan zaman-frekans maskeleme kavramı Alt Başlık 2.3'te, maskeyi kestiren derin ağ mimarileri ise Alt Başlık 2.4'te incelenmiştir.
+
+## 2.3 Zaman-Frekans Maskeleme
+
+Tek kanallı denetimli ayrıştırmada baskın yaklaşım, problemi doğrudan kaynak spektrumunu kestirmek yerine, karışımın zaman-frekans temsiline uygulanacak bir *maske* $M(f,\tau)$ kestirmeye indirgemektir. Maske, her zaman-frekans hücresinde hedef kaynağa ait enerji oranını belirtmekte; kestirilen kaynak ise maskenin karışımla noktasal çarpımıyla elde edilmektedir. Bu çerçevenin avantajı, öğrenme hedefinin sınırlı ve iyi koşullanmış bir aralıkta ($[0,1]$) tanımlanması ve karışımın halihazırda taşıdığı spektral yapının yeniden üretilmesine gerek kalmamasıdır. Alanyazında birbirinden türeyen birkaç maske tanımı önerilmiştir.
+
+**İdeal ikili maske.** İdeal ikili maske (Ideal Binary Mask), her zaman-frekans hücresini, yerel işaret-gürültü oranının bir eşik $\theta$ değerini aşıp aşmamasına göre $\{0,1\}$ değerlerinden birine atayan sert (hard) bir maskedir [9]:
+
+$$M_{\text{IBM}}(f,\tau) = \begin{cases} 1, & \text{SNR}(f,\tau) > \theta \\ 0, & \text{aksi hâlde.} \end{cases}$$
+
+Bu tanım, işitsel maskeleme olgusundan esinlenmiş ve ayrıştırılmış sinyalin anlaşılırlığını yükselttiği gösterilmiştir. Ancak ikili karar yapısı, hücre sınırlarında ani geçişlere ve spektral çıkarmadakine benzer yapay tonlara yol açmaktadır.
+
+**İdeal oran maskesi.** İdeal oran maskesi (Ideal Ratio Mask), sert kararı yumuşatarak hedef ve gürültü güçlerinin oranına dayalı sürekli bir değer atamaktadır:
+
+$$M_{\text{IRM}}(f,\tau) = \left(\frac{P_S(f,\tau)}{P_S(f,\tau) + P_N(f,\tau)}\right)^{\beta},$$
+
+burada $\beta$ bir biçimlendirme üssüdür. Bu ifade, $\beta = 1$ için Wiener kazanç fonksiyonuyla yapısal benzerlik taşımakta; ancak burada oran, öğrenilmiş bir ağ tarafından kestirilmektedir [10]. Oran maskesi, sürekli ve sınırlı doğası nedeniyle bu çalışmada benimsenen yumuşak maske kurgusunun da temelini oluşturmaktadır.
+
+**Genlik maskesi ve faz duyarlılığı.** Genlik maskesi (Spectral Magnitude Mask), hedef ile karışım genliklerinin doğrudan oranı $M_{\text{MM}}(f,\tau) = |S(f,\tau)| / |X(f,\tau)|$ olarak tanımlanır ve örtüşen kaynaklarda $1$ değerini aşabilir. Bu tanımların tümü, yeniden sentez sırasında karışımın fazını kullanmakta; oysa hedef ile karışım arasındaki faz farkı, genlik düzeyinde dahi bir hataya yol açmaktadır. Faz duyarlı maske (Phase-Sensitive Mask), bu farkı kosinüs terimiyle hesaba katmaktadır [11]:
+
+$$M_{\text{PSM}}(f,\tau) = \frac{|S(f,\tau)|}{|X(f,\tau)|}\,\cos\!\big(\theta_S(f,\tau) - \theta_X(f,\tau)\big).$$
+
+Karmaşık oran maskesi (Complex Ideal Ratio Mask) ise maskenin gerçek ve sanal bileşenlerini ayrı ayrı kestirerek faz bilgisini de geri kazanmayı amaçlamaktadır [12]. Bu iki yaklaşım, faz yeniden yapılandırmasının getirdiği başarım artışını sağlamakla birlikte, kestirim hedefini karmaşık düzleme taşıdığından eğitim kararlılığı ve hesaplama maliyeti açısından ek yük getirmektedir.
+
+Bu tez çalışmasında, hedef sınıfın genlik spektrogramı için $[0,1]$ aralığında değer alan yumuşak bir maske kestirilmekte ve yeniden sentez aşamasında karışımın özgün fazı korunmaktadır. Dolayısıyla benimsenen kurgu, oran maskesi ve genlik maskesi ailesine girmekte; faz duyarlı ve karmaşık maske türevleri, ilgili başarım–maliyet ödünleşimi gerekçesiyle kapsam dışında bırakılmaktadır. Maskenin oracle bir işaret-gürültü oranından hesaplanması yerine, bir derin sinir ağı tarafından doğrudan öğrenilmesi söz konusudur; bu ağların mimari gelişimi Alt Başlık 2.4'te ele alınmıştır.

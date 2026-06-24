@@ -1,7 +1,7 @@
 <!--
 ÖN BÖLÜMLER — Birleştirme aşamasında tezin en başına yerleştirilecektir.
 ⟨...⟩ ile gösterilen alanlar kişiye/teze özeldir; doldurulması gerekmektedir.
-Şekil ve tablo görselleri ../thesis_figures_v3.0/ dizinindedir.
+Şekil ve tablo görselleri ../thesis_figures/ dizinindedir.
 -->
 
 # MARMARA ÜNİVERSİTESİ
@@ -89,7 +89,7 @@ Haziran, 2026
   - 3.8 Çıkarım Hattı
 - **4. BULGULAR VE TARTIŞMA**
   - 4.1 Değerlendirme Metodolojisi ve Metrikler
-  - 4.2 Model Sürüm Evrimi
+  - 4.2 Tasarım Kararlarının Deneysel Gerekçeleri
   - 4.3 Ayrıştırma Başarımı
   - 4.4 Tespit Başarımı
   - 4.5 FiLM Koşullandırmasının Katkısı
@@ -107,7 +107,7 @@ Haziran, 2026
 
 ### DERİN ÖĞRENME İLE SEÇİCİ GÜRÜLTÜ ENGELLEME
 
-Bu çalışmada, bir ses ya da video kaydından seçilen ses sınıflarının, kaydın geri kalan içeriğine dokunulmadan çıkarılmasını sağlayan, derin öğrenme tabanlı bir seçici gürültü engelleme sistemi sunulmaktadır. Problem, çıkarılacak sınıfın modele bir tek-sıcak sorgu vektörüyle bildirildiği, sorgu-koşullu ve denetimli bir kaynak ayrıştırma görevi olarak biçimlendirilmiştir. Önerilen model, sınıf sorgusunun her kodlayıcı seviyesinde ve darboğazda ölçek ve öteleme parametrelerine dönüştürüldüğü, FiLM ile koşullandırılmış iki boyutlu bir U-Net mimarisidir. Model, $16$ kHz örnekleme hızında, bir saniyelik pencerelerin logaritmik genlik spektrogramları üzerinde çalışmakta ve sorgulanan sınıf için bir yumuşak maske üretmektedir. Eğitim verisi, bellek içi bir klip önbelleğinden anlık olarak sentezlenmekte; negatif örnekler, ağırlıklı zor-negatif örnekleme ve arka plan gürültüsü artırımı ile modelin seçici bastırma ve gürültü dayanıklılığı kazanması sağlanmaktadır. Sınıf varlığının kestirimi için öğrenilmiş bir tespit başı kullanılmış; eğitim süreci Adam optimize edicisi, karma hassasiyetli hesaplama ve XLA derlemesi ile hızlandırılmıştır. Sistem, iteratif bir sürüm metodolojisiyle geliştirilmiş ve son sürümünde, ayrıştırma başarımı en yüksek on beş sınıftan oluşan düzenlenmiş bir sözcük dağarcığı üzerinde tespit makro $F_1$ değeri $0{,}692$'ye ulaşmıştır. Geliştirilen uçtan uca web uygulaması, kullanıcının yüklediği dosyada bulunan sınıfları tespit etmekte ve seçilen sınıfları örtüşmeli toplama yöntemiyle dosyadan çıkarmaktadır.
+Bu çalışmada, bir ses ya da video kaydından seçilen ses sınıflarının, kaydın geri kalan içeriğine dokunulmadan çıkarılmasını sağlayan, derin öğrenme tabanlı bir seçici gürültü engelleme sistemi sunulmaktadır. Problem, çıkarılacak sınıfın modele bir tek-sıcak sorgu vektörüyle bildirildiği, sorgu-koşullu ve denetimli bir kaynak ayrıştırma görevi olarak biçimlendirilmiştir. Önerilen model, sınıf sorgusunun her kodlayıcı seviyesinde ve darboğazda ölçek ve öteleme parametrelerine dönüştürüldüğü, FiLM ile koşullandırılmış iki boyutlu bir U-Net mimarisidir. Model, $16$ kHz örnekleme hızında, bir saniyelik pencerelerin logaritmik genlik spektrogramları üzerinde çalışmakta ve sorgulanan sınıf için bir yumuşak maske üretmektedir. Eğitim verisi, bellek içi bir klip önbelleğinden anlık olarak sentezlenmekte; negatif örnekler, ağırlıklı zor-negatif örnekleme ve arka plan gürültüsü artırımı ile modelin seçici bastırma ve gürültü dayanıklılığı kazanması sağlanmaktadır. Sınıf varlığının kestirimi için öğrenilmiş bir tespit başı kullanılmış; eğitim süreci Adam optimize edicisi, karma hassasiyetli hesaplama ve XLA derlemesi ile hızlandırılmıştır. Sistem, iteratif bir deneysel metodolojiyle geliştirilmiş ve ayrıştırma başarımı en yüksek on beş sınıftan oluşan düzenlenmiş bir sözcük dağarcığı üzerinde tespit makro $F_1$ değeri $0{,}692$'ye ulaşmıştır. Geliştirilen uçtan uca web uygulaması, kullanıcının yüklediği dosyada bulunan sınıfları tespit etmekte ve seçilen sınıfları örtüşmeli toplama yöntemiyle dosyadan çıkarmaktadır.
 
 **Anahtar Kelimeler:** Seçici gürültü engelleme, kaynak ayrıştırma, sorgu-koşullu öğrenme, FiLM, U-Net, derin öğrenme, ses olayı tespiti.
 
@@ -124,7 +124,7 @@ Haziran, 2026
 
 ### SELECTIVE NOISE CANCELLATION WITH DEEP LEARNING
 
-This study presents a deep-learning-based selective noise cancellation system that removes chosen sound classes from an audio or video recording while leaving the rest of the content untouched. The problem is formulated as a query-conditioned, supervised source-separation task in which the class to be extracted is signalled to the model through a one-hot query vector. The proposed model is a two-dimensional U-Net conditioned with FiLM, where the class query is transformed into scale and shift parameters at every encoder level and at the bottleneck. The model operates on log-magnitude spectrograms of one-second windows at a $16$ kHz sampling rate and produces a soft mask for the queried class. Training data is synthesised on the fly from an in-memory clip cache; negative examples, weighted hard-negative sampling and background-noise augmentation enable the model to learn selective suppression and noise robustness. A learned detection head is used to estimate class presence, and the training process is accelerated with the Adam optimiser, mixed-precision computation and XLA compilation. The system was developed through an iterative versioning methodology, and in its final version it reached a detection macro $F_1$ score of $0.692$ on a curated vocabulary of the fifteen best-separated classes. The end-to-end web application detects the classes present in an uploaded file and removes the selected classes via an overlap-add procedure.
+This study presents a deep-learning-based selective noise cancellation system that removes chosen sound classes from an audio or video recording while leaving the rest of the content untouched. The problem is formulated as a query-conditioned, supervised source-separation task in which the class to be extracted is signalled to the model through a one-hot query vector. The proposed model is a two-dimensional U-Net conditioned with FiLM, where the class query is transformed into scale and shift parameters at every encoder level and at the bottleneck. The model operates on log-magnitude spectrograms of one-second windows at a $16$ kHz sampling rate and produces a soft mask for the queried class. Training data is synthesised on the fly from an in-memory clip cache; negative examples, weighted hard-negative sampling and background-noise augmentation enable the model to learn selective suppression and noise robustness. A learned detection head is used to estimate class presence, and the training process is accelerated with the Adam optimiser, mixed-precision computation and XLA compilation. The system was developed through an iterative experimental methodology and reached a detection macro $F_1$ score of $0.692$ on a curated vocabulary of the fifteen best-separated classes. The end-to-end web application detects the classes present in an uploaded file and removes the selected classes via an overlap-add procedure.
 
 **Keywords:** Selective noise cancellation, source separation, query-conditioned learning, FiLM, U-Net, deep learning, sound event detection.
 
@@ -142,9 +142,9 @@ June, 2026
 | Şekil | Açıklama |
 |---|---|
 | Şekil 3.1 | Önerilen sistemin uçtan uca veri akışı şeması |
-| Şekil 3.2 | v3.0 sürümünün on beş sınıflı sözcük dağarcığında sınıf başına klip sayısı |
+| Şekil 3.2 | On beş sınıflı sözcük dağarcığında sınıf başına klip sayısı |
 | Şekil 3.3 | FiLM-koşullu U-Net mimarisi |
-| Şekil 4.1 | v3.0 sürümünün sınıf bazlı SI-SDRi değerleri |
+| Şekil 4.1 | Sınıf bazlı SI-SDRi değerleri |
 | Şekil 4.2 | İşlenmemiş karışım ile model kestiriminin SI-SDR karşılaştırması |
 | Şekil 4.3 | Sınıf bazlı kesinlik, duyarlılık ve $F_1$ değerleri |
 | Şekil 4.4 | Toplam doğru pozitif, yanlış pozitif ve yanlış negatif sayıları |
@@ -166,9 +166,9 @@ June, 2026
 
 | Tablo | Açıklama |
 |---|---|
-| Tablo 3.1 | v3.0 sürümünün eğitim hiperparametreleri |
-| Tablo 4.1 | Model sürümlerinin evrimi, başlıca değişiklikler ve sonuçlar |
-| Tablo 4.2 | v3.0 sürümünün sınıf bazlı tespit ve ayrıştırma başarımı |
+| Tablo 3.1 | Önerilen modelin eğitim hiperparametreleri |
+| Tablo 4.1 | Denenen tasarım değişiklikleri ve gözlemlenen sonuçlar |
+| Tablo 4.2 | Sınıf bazlı tespit ve ayrıştırma başarımı |
 
 ---
 

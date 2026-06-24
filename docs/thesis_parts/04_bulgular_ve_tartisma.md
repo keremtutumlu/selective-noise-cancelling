@@ -116,6 +116,8 @@ Sonuçlar, tespit başının yüksek kesinlikli ancak tutucu bir çalışma nokt
 
 **Şekil 4.5:** Tespit başının ROC ve kesinlik-duyarlılık eğrileri.
 
+Şekil 4.5'teki eğriler, tespit başının ham sıralama (ranking) kalitesinin, tek bir eşikle elde edilen $F_1$ değerinden daha yüksek olduğunu ortaya koymaktadır. Mikro-ortalamalı ROC eğrisinin altındaki alan $0{,}907$, kesinlik-duyarlılık eğrisinin ortalama kesinliği (AP) ise $0{,}811$ değerindedir. ROC eğrisinin düşük yanlış-pozitif oranlarında dahi yüksek doğru-pozitif oranına ulaşması, varlık olasılığının ayırt edici bir sinyal taşıdığını göstermektedir. Makro $F_1$ değerinin ($0{,}692$) bu sıralama ölçütlerinin altında kalması, başarımın bir eşikleme (çalışma noktası) tercihinden kaynaklandığına; modelin öğrendiği olasılık sinyalinin kendisinin daha yüksek bir ayrım gücüne sahip olduğuna işaret etmektedir.
+
 ## 4.5 FiLM Koşullandırmasının Katkısı
 
 FiLM koşullandırmasının ayrıştırmaya katkısı, doğru sınıf sorgulandığında üretilen çıkış enerjisi ile yanlış sınıf sorgulandığında üretilen çıkış enerjisinin oranıyla (ayrımcılık üstünlüğü, advantage) değerlendirilmiştir. Yüksek bir oran, modelin sorgulanan sınıfa göre çıktısını güçlü biçimde farklılaştırdığını, yani koşullandırmanın etkin çalıştığını göstermektedir. Sınıf bazlı ayrımcılık üstünlüğü Şekil 4.6'da, çıkış-giriş enerji oranı ise Şekil 4.7'de gösterilmiştir.
@@ -146,11 +148,15 @@ Tespit aşamasında hangi sınıfların yüzeye çıkarılacağı, üç parametr
 
 **Şekil 4.10:** En sık yanlış pozitif üreten sınıflar.
 
+Şekil 4.8, makro $F_1$ değerinin göreli kesme $0{,}5$ ile $0{,}7$ aralığında yaklaşık $0{,}71$ düzeyinde bir plato oluşturduğunu; eşik sıkılaştıkça toplam yanlış pozitif sayısının (yaklaşık $165$'ten $20$'ye) toplam doğru pozitif sayısından (yaklaşık $510$'dan $390$'a) daha hızlı düştüğünü göstermektedir. Bu nedenle göreli kesmenin $0{,}80$'e çekilmesi, $F_1$ değerinden yalnızca küçük bir ödün vererek yanlış pozitifleri belirgin biçimde azaltmaktadır. Şekil 4.9 ise mevcut ($n = 732$) ve mevcut olmayan ($n = 3768$) sınıf-karışım çiftleri için tespit puanlarının yoğunluk dağılımını karşılaştırmaktadır; mevcut olmayan sınıflar sıfıra yakın bir tepe etrafında yoğunlaşırken, mevcut sınıflar $1{,}0$ değerinde belirgin bir tepe oluşturmaktadır. İki dağılımın $0{,}1$–$0{,}4$ aralığındaki örtüşmesi, kaçırılan gerçek sınıfların ve seyrek yanlış pozitiflerin ortak kaynağıdır. Şekil 4.10'da görülen en sık yanlış pozitif üreten sınıfların katkısı ise düşüktür; toplam yanlış pozitif sayısı $34$ ile sınırlı kaldığından, hiçbir sınıf sistematik bir sahte tespit kaynağı oluşturmamaktadır.
+
 Tarama, göreli kesme eşiğinin yükseltilmesinin yanlış pozitifleri azaltmakla birlikte doğru pozitifleri de düşürdüğünü, dolayısıyla kesinlik ile duyarlılık arasında doğrudan bir ödünleşim bulunduğunu göstermektedir. Yürütülen eşik taramalarında, gevşek bir kesme (göreli kesme $0{,}65$, $k = 10$) daha çok doğru pozitif ancak yüksek yanlış pozitif; sıkı bir kesme (göreli kesme $0{,}90$, $k = 5$) ise az yanlış pozitif ancak çok sayıda kaçırılan sınıf üretmiştir. Bu uçların arasında, mutlak taban $0{,}05$, göreli kesme $0{,}80$ ve $k = 5$ değerleriyle tanımlanan çalışma noktası, en az sahte yüzeyleme ile kabul edilebilir bir duyarlılığı sağlayan ayar olarak seçilmiş ve hem web uygulamasında hem de değerlendirmede varsayılan olarak benimsenmiştir. Sınıfların birlikte tespit edilme örüntüleri Şekil 4.11'deki eş-zamanlı görünüm (co-occurrence) matrisinde sunulmuştur.
 
 ![Şekil 4.11](../thesis_figures/04_detection_cooccurrence.png)
 
 **Şekil 4.11:** Sınıfların birlikte tespit edilme (co-occurrence) matrisi.
+
+Şekil 4.11'deki satır-normalize edilmiş eş-zamanlı görünüm matrisinde baskın bir köşegen gözlemlenmektedir; bu, tespit edilen sınıfın çoğunlukla gerçekte mevcut olan sınıfla örtüştüğünü göstermektedir. Çalar saat, kilise çanları, helikopter ve elektrikli süpürge satırlarında köşegen değeri $0{,}8$ ve üzerindedir. Buna karşılık öksürük ve hapşırık satırları soluk bir köşegen sergilemekte; bu da bu sınıfların düşük duyarlılığını (sırasıyla $0{,}17$ ve $0{,}12$) doğrulamaktadır. Köşegen dışı değerlerin genel olarak düşük kalması, sınıflar arasında sistematik bir karışmanın bulunmadığına işaret etmektedir.
 
 ## 4.7 Niteliksel Sonuçlar
 
@@ -168,11 +174,15 @@ Niceliksel metriklerin yanı sıra, modelin çıktısı spektrogram görselleşt
 
 **Şekil 4.14:** Elektrikli süpürge sınıfı için karışım, hedef ve model kestirimi spektrogramları.
 
+Şekil 4.12–4.14'teki dört panelli gösterimlerde (karışım, kestirilen maske, kestirilen stem ve gerçek stem) modelin kestirdiği stem'in gerçek stem ile görsel olarak büyük ölçüde örtüştüğü gözlemlenmektedir. Örneğin çalar saatin yatay harmonik bantları, karışımdaki diğer kaynakların (diş fırçalama ve kilise çanları) enerjisi bastırılırken kestirilen stem'de korunmaktadır. Bu görselleştirmeler, dalga biçimi düzlemindeki SI-SDR sınırlamasına karşın modelin, sorgulanan sınıfın spektro-zamansal yapısını algısal olarak doğru biçimde geri kazandığını desteklemektedir.
+
 Çıkarma işleminin zaman düzlemindeki etkisi Şekil 4.15'teki gösterimde sunulmuştur; bu gösterim, seçilen sınıfın karışımdan çıkarılmasından önceki ve sonraki dalga biçimlerini karşılaştırmaktadır. Dinleme testlerinde, üçüncü bölümde açıklanan örtüşme oranı düzeltmesinin (Alt Başlık 3.8.3) ardından parça sınırlarındaki düzenli darbeli yapaylığın ortadan kalktığı doğrulanmıştır. Sürekli ve ayırt edici tınıya sahip sınıflarda (örneğin elektrikli süpürge, helikopter, çalar saat) çıkarmanın işitsel olarak belirgin biçimde etkili olduğu; kısa süreli geçici seslerde ise çıkarmanın daha sınırlı kaldığı gözlemlenmiştir.
 
 ![Şekil 4.15](../thesis_figures/14_removal_demo.png)
 
 **Şekil 4.15:** Seçilen sınıfın çıkarılmasından önce ve sonra dalga biçimi karşılaştırması.
+
+Şekil 4.15, çalar saatin bir karışımdan çıkarılması örneğini zaman ve frekans düzlemlerinde göstermektedir. Çıkarma öncesi dalga biçiminin genliği tüm süre boyunca yüksekken, çıkarma sonrası dalga biçiminin genliği belirgin biçimde düşmekte; yalnızca hedef dışında kalan bileşenlerin düşük düzeyli artığı korunmaktadır. Alt sıradaki spektrogramlarda, özgün kayıttaki çalar saatin düzenli yatay harmonik bantlarının temizlenmiş çıktıda büyük ölçüde kaybolması, çıkarmanın frekans düzlemindeki etkisini doğrudan görünür kılmaktadır.
 
 ## 4.8 Sınırlılıklar ve Tartışma
 

@@ -167,7 +167,9 @@ June, 2026
 
 | Tablo | Açıklama |
 |---|---|
-| Tablo 3.1 | Önerilen modelin eğitim hiperparametreleri |
+| Tablo 3.1 | Kullanılan veri kümelerinin sayısal özeti |
+| Tablo 3.2 | Düzenlenmiş 15 sınıflı sözcük dağarcığının sınıf bazlı klip sayıları |
+| Tablo 3.3 | Önerilen modelin eğitim hiperparametreleri |
 | Tablo 4.1 | Denenen tasarım değişiklikleri ve gözlemlenen sonuçlar |
 | Tablo 4.2 | Sınıf bazlı tespit ve ayrıştırma başarımı |
 

@@ -54,19 +54,29 @@ $\log(1 + \cdot)$ biçimindeki sıkıştırma, sıfır genlikte tanımlı kalmas
 
 ## 3.3 Veri Kümeleri
 
-Modelin sözcük dağarcığı, halka açık çevresel ses veri kümelerinin birleştirilmesiyle oluşturulmuştur. Birleştirme işlemi, her veri kümesini ortak bir $\{$sınıf$:$ dalga biçimi listesi$\}$ sözlüğüne çözen ve bu sözlükleri tek bir önbellekte toplayan veri yükleme katmanı tarafından yürütülmektedir.
+Modelin sözcük dağarcığı, halka açık çevresel ses veri kümelerinin birleştirilmesiyle oluşturulmuştur. Birleştirme işlemi, her veri kümesini ortak bir $\{$sınıf$:$ dalga biçimi listesi$\}$ sözlüğüne çözen ve bu sözlükleri tek bir önbellekte toplayan veri yükleme katmanı tarafından yürütülmektedir. Kullanılan veri kümelerinin sayısal özeti Tablo 3.1'de verilmiştir.
+
+**Tablo 3.1:** Kullanılan veri kümelerinin sayısal özeti.
+
+| Veri kümesi | Sınıf sayısı | Klip sayısı | Klip süresi | Özgün örnekleme hızı |
+|---|---|---|---|---|
+| ESC-50 | 50 | 2.000 | 5 s (sabit) | 44,1 kHz |
+| UrbanSound8K | 10 | 8.732 | $\leq 4$ s | 16–48 kHz (değişken) |
+| FSD50K | ~200 | ~51.200 | 0,3–30 s | 44,1 kHz |
+
+Tüm kayıtlar, üçüncü bölümün ön işleme sözleşmesi (Alt Başlık 3.2.1) uyarınca $16$ kHz örnekleme hızında ve tek kanala yeniden örneklenmiştir; FSD50K klipleri, bellek kullanımını sınırlandırmak için yüklenirken $4$ saniyeye kırpılmaktadır. Önerilen modelde yalnızca ESC-50 ve UrbanSound8K kullanılmakta; bu iki kümenin birleşimi, takma ad eşlemesi sonrası yaklaşık elli altı sınıf ve toplam $10.732$ klip içermektedir.
 
 ### 3.3.1 ESC-50
 
-ESC-50, elli çevresel ses sınıfından oluşan ve sınıf başına kırk klip içeren, toplam iki bin kayıtlık bir veri kümesidir [31]. Her klip beş saniye uzunluğundadır ve hayvan sesleri, doğal ses olayları, insan kaynaklı sesler, iç mekân sesleri ve kentsel gürültü gibi geniş bir akustik yelpazeyi kapsamaktadır. Sınıf başına klip sayısının sınırlı olması, bu çalışmadaki minimum klip tabanı eşiğinin (Alt Başlık 3.3.4) belirlenmesinde de belirleyici olmuştur.
+ESC-50, elli çevresel ses sınıfından oluşan ve sınıf başına tam olarak kırk klip içeren, toplam iki bin kayıtlık dengeli bir veri kümesidir [31]. Her klip beş saniye uzunluğunda ve $44{,}1$ kHz örnekleme hızındadır; toplam ses süresi yaklaşık $2{,}8$ saattir. Kayıtlar Freesound arşivinden derlenmiş olup, hayvan sesleri, doğal ses olayları, insan kaynaklı sesler, iç mekân/ev sesleri ve kentsel gürültü olmak üzere beş üst kategoriye ayrılmış; veri kümesi beş çapraz-doğrulama katmanına bölünmüştür. Sınıf başına klip sayısının kırk gibi sınırlı bir değerde olması, bu çalışmadaki minimum klip tabanı eşiğinin (Alt Başlık 3.3.4) $N_{\min} = 40$ olarak belirlenmesinde de belirleyici olmuştur.
 
 ### 3.3.2 UrbanSound8K ve Sınıf Birleştirme
 
-UrbanSound8K, on kentsel ses sınıfından oluşan ve sekiz binin üzerinde klip içeren bir veri kümesidir [32]. Bu kümenin bazı sınıfları, ESC-50 ile anlamsal olarak örtüşmektedir. Örtüşen sınıfların ayrı etiketler hâline gelmesini önlemek için bir takma ad eşlemesi (`CLASS_ALIASES`) tanımlanmış; örneğin UrbanSound8K'deki köpek havlaması sınıfı (`dog_bark`), ESC-50'deki köpek sınıfına (`dog`), motor rölantisi sınıfı (`engine_idling`) ise motor sınıfına (`engine`) eşlenmiştir. Bu eşleme sayesinde örtüşen sınıfların klipleri tek bir kanonik etiket altında havuzlanmakta; UrbanSound8K'nin on sınıfından dördü ESC-50 ile birleşmekte, altısı ise yeni sınıf olarak eklenmektedir. İki veri kümesinin birlikte yüklenmesiyle modelin sözcük dağarcığı yaklaşık elli altı sınıfa ulaşmaktadır.
+UrbanSound8K, on kentsel ses sınıfından oluşan ve toplam $8.732$ klip içeren bir veri kümesidir [32]. Klipler en çok dört saniye uzunluğunda olup veri kümesi on çapraz-doğrulama katmanına (fold) bölünmüştür. ESC-50'nin aksine sınıflar dengesiz dağılmıştır: sınıf başına klip sayısı, en az desteklenen `gun_shot` sınıfındaki $374$ klipten, `air_conditioner` ve `street_music` gibi sınıflardaki $1.000$ klibe kadar değişmektedir. Bu kümenin bazı sınıfları ESC-50 ile anlamsal olarak örtüşmektedir. Örtüşen sınıfların ayrı etiketler hâline gelmesini önlemek için bir takma ad eşlemesi (`CLASS_ALIASES`) tanımlanmış; örneğin UrbanSound8K'deki köpek havlaması sınıfı (`dog_bark`) ESC-50'deki köpek sınıfına (`dog`), motor rölantisi sınıfı (`engine_idling`) ise motor sınıfına (`engine`) eşlenmiştir. Bu eşleme sayesinde örtüşen sınıfların klipleri tek bir kanonik etiket altında havuzlanmakta; on sınıfın dördü ESC-50 ile birleşmekte, altısı ise yeni sınıf olarak eklenmektedir. İki veri kümesinin birlikte yüklenmesiyle modelin sözcük dağarcığı yaklaşık elli altı sınıfa ulaşmaktadır.
 
 ### 3.3.3 FSD50K ve Uzun Kuyruk Problemi
 
-FSD50K, AudioSet ontolojisine göre etiketlenmiş, yaklaşık iki yüz sınıf içeren büyük ölçekli bir ses olayı veri kümesidir [33]. Bu kümede etiketler hiyerarşiktir ve çoğu klip virgülle ayrılmış birden çok etikete sahiptir; bu çalışmada her klibin ilk (en özgül/yaprak) etiketi kanonik sınıf olarak alınmıştır. FSD50K'nin sözcük dağarcığını genişletme potansiyeli bulunmakla birlikte, yaprak etiketlerinin önemli bir bölümünün yalnızca birkaç klip tarafından desteklenmesi, bir "uzun kuyruk" problemi doğurmaktadır. Az sayıda ve çok-etiketli örnekten öğrenilen bir sınıf, ayırt edici olmayan ve dağınık bir maske üretmekte; bu maske, ilgili sınıf karışımda bulunmasa dahi yüksek enerji üreterek yanlış pozitiflere yol açmaktadır. Bu olgu, dördüncü bölümde ayrıntılandırılan deneysel gözlemlerde belirleyici bir başarısızlık örüntüsü olarak ortaya çıkmış ve önerilen modelde FSD50K bütünüyle dışarıda bırakılmıştır.
+FSD50K, AudioSet ontolojisine göre etiketlenmiş, $200$ sınıf ve yaklaşık $51.200$ klip ($40.966$ geliştirme + $10.231$ değerlendirme) içeren büyük ölçekli bir ses olayı veri kümesidir [33]. Klip süreleri $0{,}3$ ile $30$ saniye arasında değişmekte ve toplam süre yüz saati aşmaktadır. Bu kümede etiketler hiyerarşiktir ve çoğu klip virgülle ayrılmış birden çok etikete sahiptir; bu çalışmada her klibin ilk (en özgül/yaprak) etiketi kanonik sınıf olarak alınmıştır. FSD50K'nin sözcük dağarcığını genişletme potansiyeli bulunmakla birlikte, $200$ yaprak etiketinin önemli bir bölümünün yalnızca birkaç klip tarafından desteklenmesi, bir "uzun kuyruk" problemi doğurmaktadır. Az sayıda ve çok-etiketli örnekten öğrenilen bir sınıf, ayırt edici olmayan ve dağınık bir maske üretmekte; bu maske, ilgili sınıf karışımda bulunmasa dahi yüksek enerji üreterek yanlış pozitiflere yol açmaktadır. Bu olgu, dördüncü bölümde ayrıntılandırılan deneysel gözlemlerde belirleyici bir başarısızlık örüntüsü olarak ortaya çıkmış ve önerilen modelde FSD50K bütünüyle dışarıda bırakılmıştır.
 
 ### 3.3.4 Minimum Klip Tabanı ve Düzenlenmiş Sözcük Dağarcığı
 
@@ -77,6 +87,29 @@ Az desteklenen sınıfların yarattığı yanlış pozitif eğilimini sınırlan
 ![Şekil 3.2](../thesis_figures/01_dataset_clip_counts.png)
 
 **Şekil 3.2:** On beş sınıflı düzenlenmiş sözcük dağarcığında sınıf başına klip sayısı.
+
+Seçilen on beş sınıfın klip sayıları ve kaynak veri kümeleri Tablo 3.2'de listelenmiştir. Düzenlenmiş sözcük dağarcığı toplam $934$ klip içermekte; bu kliplerin $560$'ı ESC-50 kaynaklı on dört sınıftan ($14 \times 40$), $374$'ü ise UrbanSound8K kaynaklı `gun_shot` sınıfından gelmektedir. `gun_shot` dışındaki sınıfların tümü, ESC-50'nin sınıf başına kırk klip dengesini koruduğundan, sözcük dağarcığı `gun_shot` haricinde tümüyle dengelidir.
+
+**Tablo 3.2:** Düzenlenmiş on beş sınıflı sözcük dağarcığının sınıf bazlı klip sayıları.
+
+| Sınıf | Klip sayısı | Kaynak |
+|---|---|---|
+| gun_shot | 374 | UrbanSound8K |
+| brushing_teeth | 40 | ESC-50 |
+| church_bells | 40 | ESC-50 |
+| clapping | 40 | ESC-50 |
+| clock_alarm | 40 | ESC-50 |
+| coughing | 40 | ESC-50 |
+| crow | 40 | ESC-50 |
+| crying_baby | 40 | ESC-50 |
+| hand_saw | 40 | ESC-50 |
+| helicopter | 40 | ESC-50 |
+| rain | 40 | ESC-50 |
+| sea_waves | 40 | ESC-50 |
+| sneezing | 40 | ESC-50 |
+| toilet_flush | 40 | ESC-50 |
+| vacuum_cleaner | 40 | ESC-50 |
+| **Toplam** | **934** | — |
 
 ## 3.4 Anlık Veri Üretimi: SeparationMixer
 
@@ -303,9 +336,9 @@ Girdi : üreteç akışı G (Algoritma 3.1), model f_θ, Adam(η),
 
 ### 3.7.6 Hiperparametreler ve Donanım Ortamı
 
-Önerilen modelde kullanılan başlıca hiperparametreler Tablo 3.1'de özetlenmiştir.
+Önerilen modelde kullanılan başlıca hiperparametreler Tablo 3.3'te özetlenmiştir.
 
-**Tablo 3.1:** Önerilen modelin eğitim hiperparametreleri.
+**Tablo 3.3:** Önerilen modelin eğitim hiperparametreleri.
 
 | Parametre | Değer |
 |---|---|

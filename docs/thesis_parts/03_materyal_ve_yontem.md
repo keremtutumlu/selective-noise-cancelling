@@ -243,3 +243,37 @@ Modelin son sürümünde kullanılan başlıca hiperparametreler Tablo 3.1'de ö
 | Tespit başı boyutu | 128 |
 
 Eğitim, Tensor Çekirdeği destekli grafik işlemcileri (Google Colab ortamında A100 80 GB ve T4) üzerinde, karma hassasiyet ve XLA etkin biçimde yürütülmüştür. Eğitim süreci boyunca Doğrulama Kaybı izlenmiş; modelin son sürümlerinde altmış dönem boyunca kararlı bir yakınsama gözlemlenmiştir. Eğitim, çıkarım ve değerlendirme betikleri, GPU bulunmayan ortamlar için Colab not defterleriyle de yinelenebilir kılınmıştır.
+
+## 3.8 Çıkarım Hattı
+
+Eğitilmiş model, bir web uygulaması üzerinden uçtan uca bir gürültü temizleme hattıyla işlevsel kılınmıştır. Çıkarım hattı, kullanıcının yüklediği dosyada bulunan sınıfların tespit edilmesi ve seçilen sınıfların dosyadan çıkarılması olmak üzere iki ana aşamadan oluşmaktadır.
+
+### 3.8.1 Ses Olayı Tespiti
+
+Tespit aşamasında, yüklenen dosyadan hız için en çok sekiz saniyelik bir bölüm bir saniyelik pencerelere ayrılmaktadır. Her pencere, eğitimle tutarlılığı korumak için tepe genliği $1{,}0$ olacak biçimde normalize edilmekte ve modele beslenmektedir. Tespit başına sahip modellerde, her aday sınıf için pencereler üzerinden ortalama varlık olasılığı bir tespit puanı olarak kullanılmaktadır. Tespit başının yakınsamadığı ve tüm sınıflar için yaklaşık $0{,}5$ değerinde neredeyse düzgün bir olasılık ürettiği durumlara karşı bir koruma tanımlanmıştır: puan aralığı $0{,}15$ eşiğinin altında kalırsa, hat maske-enerjisi sezgiseline geri dönmektedir.
+
+Aday sınıflar, varsa modele ait tespit izin listesiyle (allow-list) sınırlandırılmakta; böylece yerel verinin doğrulayamadığı sınıflar aday havuzundan çıkarılmaktadır. Yüzeye çıkarılacak sınıflar, iki ölçütle belirlenmektedir: mutlak bir taban ($0{,}05$) ve kazanan sınıf puanının göreli bir oranı ($0{,}80 \times$ kazanan). Bu iki eşiğin büyüğü kesme değeri olarak alınmakta ve eşiği aşan en çok beş sınıf kullanıcıya sunulmaktadır. Bu çalışma noktası ($\text{taban} = 0{,}05$, $\text{göreli kesme} = 0{,}80$, $k = 5$), dördüncü bölümde sunulan eşik taramasında en az sahte yüzeyleme ile en yüksek kesinliği veren ayar olarak seçilmiştir.
+
+### 3.8.2 Oran Maskesi ile Kaynak Çıkarma
+
+Çıkarma aşamasında, her seçili sınıf için model bir genlik kestirimi üretmekte ve bu kestirimden bir bastırma maskesi türetilmektedir. Bir zaman-frekans hücresinde, kestirilen stem genliği $\hat{e}_c$ ile karışım genliği $|X|$ arasındaki genlik oranı
+
+$$r_c = \mathrm{clip}\!\left(\frac{\hat{e}_c}{|X| + \varepsilon},\, 0,\, 1\right)$$
+
+biçiminde hesaplanmaktadır. Genlik oranının (güç oranı $\hat{e}_c^2/|X|^2$ yerine) tercih edilmesi, modelin tutucu (küçük) genlik kestirimleri ürettiği durumlarda daha yüksek bir tepkisellik sağlamasındandır. Seçilen tüm sınıflar için bastırma maskeleri çarpımsal olarak birleştirilmekte; bir kullanıcı denetimli *çıkarma kuvveti* katsayısı $\lambda \in [0, 1]$ ile bastırma şiddeti ayarlanmaktadır:
+
+$$M = \prod_{c \in \text{seçili}} \mathrm{clip}\!\big(1 - \lambda\, r_c,\, 0,\, 1\big).$$
+
+$\lambda = 1$ tam bastırmaya, $\lambda = 0$ ise hiç bastırma yapılmamasına karşılık gelmektedir. Çarpımsal birleştirme, birden çok sınıfın aynı hücredeki katkılarının kümülatif olarak bastırılmasını sağlamaktadır.
+
+### 3.8.3 Hanning Pencereli Örtüşmeli Toplama
+
+Çıkarma işlemi, tüm dosya boyunca, model girişinin sabit zaman boyutuna ($128$ çerçeve) uyacak biçimde parçalar hâlinde uygulanmaktadır. Parçalar arası adım, $\text{TIME\_FRAMES}/4 = 32$ çerçeve (yaklaşık $0{,}25$ s) olarak belirlenmiş; bu, ardışık parçalar arasında $\%75$ örtüşme sağlamaktadır. Her parça, bir Hann penceresiyle ağırlıklandırılıp örtüşmeli toplama (overlap-add) ile birleştirilmekte ve birikmiş ağırlıklara bölünerek normalize edilmektedir. Örtüşme oranının $\%50$'den $\%75$'e çıkarılması, parça sınırlarında düzenli aralıklarla duyulan ve dördüncü bölümde belgelenen darbeli yapaylığı (boundary pulsing) gidermiştir. Ayrıca, müzikal gürültüyü bastırmak için maske, zaman ekseninde beş çerçevelik (yaklaşık $40$ ms) bir ortalama çekirdeğiyle düzleştirilmektedir.
+
+### 3.8.4 Faz Yeniden Kullanımı ve Ters STFT
+
+Model yalnızca genlik düzleminde çalıştığından, faz bilgisi kestirilmemekte; bunun yerine karışımın özgün fazı yeniden kullanılmaktadır. Tüm dosya için tek bir STFT hesaplanmakta ve böylece faz, parça sınırları boyunca küresel olarak tutarlı kalmaktadır. Maskelenmiş genlik, düşürülen Nyquist bini sıfırla yeniden eklendikten sonra karışımın karmaşık fazıyla çarpılarak ters STFT'ye verilmekte ve zaman düzlemine geri döndürülmektedir. Yeniden sentezlenen dalga biçimi, başlangıçtaki tepe normalizasyonu tersine çevrilerek özgün ölçeğine döndürülmekte; gerekirse kırpılmayı önlemek için yeniden ölçeklenmektedir. Genlikten faz kestiren yinelemeli Griffin–Lim türü yöntemler [38] daha yüksek bir yeniden sentez kalitesi sunabilmekle birlikte, ek hesaplama maliyeti ve yakınsama belirsizliği nedeniyle bu çalışmada faz yeniden kullanımı tercih edilmiştir.
+
+### 3.8.5 Web Uygulaması ve Video Entegrasyonu
+
+Çıkarım hattı, bir Gradio web uygulaması üzerinden sunulmaktadır. Kullanıcı bir ses ya da video dosyası yüklemekte, tespit edilen sınıfları işaretlemekte, çıkarma kuvvetini bir kaydırma çubuğuyla ayarlamakta ve temizlenmiş çıktıyı indirmektedir. Yalnızca ses içeren girişlerde, işlem öncesi ve sonrası karşılaştırma için bir "önce/sonra" ses çifti sunulmaktadır. Ek olarak, her seçili sınıfın model tarafından çıkarılan stem'i ayrı ayrı oynatılabilmekte; böylece her sınıfın hangi içerik olarak algılandığı işitsel olarak doğrulanabilmektedir. Video girişlerinde, temizlenen ses izi `ffmpeg` aracılığıyla özgün görüntü izinin üzerine yeniden bindirilerek video çıktısı üretilmektedir. Bu uçtan uca hat, üçüncü bölümde açıklanan tüm bileşenleri (ön işleme, koşullu model, tespit ve çıkarma) tek bir kullanıcı arayüzünde birleştirmektedir.

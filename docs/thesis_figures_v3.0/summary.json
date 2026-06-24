@@ -1,0 +1,10 @@
+{
+  "version": "v3.0",
+  "num_classes": 15,
+  "has_detection_head": true,
+  "macro_f1": 0.6921812201022634,
+  "tp": 433,
+  "fp": 34,
+  "fn": 299,
+  "si_sdri": -13.072407901077792
+}
